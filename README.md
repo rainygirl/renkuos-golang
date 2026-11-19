@@ -20,6 +20,16 @@ a full Go source tree: apply it on top of a `korli/go` checkout (or
 upstream Go, if korli/go's amd64 files aren't needed) the same way you'd
 apply any platform port.
 
+## Installing the prebuilt package
+
+On a RenkuOS arm64 image, most users never build this at all -- the
+packaged toolchain is published to this project's own pkgman repository:
+
+```sh
+pkgman add-repo https://pkgman.rainygirl.com/arm64   # once per system
+pkgman install golang_bin
+```
+
 ## Building it
 
 ```sh

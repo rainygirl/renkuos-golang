@@ -19,6 +19,16 @@ libroot.so를 직접 호출)을 그대로 따라 arm64로 확장한 것입니다
 파일이 필요 없다면 업스트림 Go) 위에 이 저장소의 파일들을 그대로 얹어서
 사용합니다.
 
+## 미리 빌드된 패키지 설치
+
+RenkuOS arm64 이미지에서는 대부분 직접 빌드할 필요가 없습니다 — 패키징된
+툴체인은 이 프로젝트 자체의 pkgman 저장소에 배포되어 있습니다:
+
+```sh
+pkgman add-repo https://pkgman.rainygirl.com/arm64   # 시스템당 한 번만
+pkgman install golang_bin
+```
+
 ## 빌드하기
 
 ```sh
