@@ -1,8 +1,8 @@
-# Haiku/arm64용 Go (RenkuOS)
+# RenkuOS/arm64용 Go
 
 [English](README.md) | [한국어](README.ko.md)
 
-`GOOS=haiku GOARCH=arm64`용으로 실제 동작하는 Go 1.27.4 툴체인입니다. Haiku
+`GOOS=haiku GOARCH=arm64`용으로 실제 동작하는 Go 1.27.4 툴체인입니다. RenkuOS
 자체의 Go 포크인 [korli/go](https://github.com/korli/go)(`golang-1.27-haiku`
 브랜치, HaikuPorts의 `dev-lang/golang` 레시피가 빌드하는 바로 그 소스)는
 `haiku/amd64`만 지원합니다. 이 포트는 korli/go가 이미 쓰고 있는 libc 호출
@@ -10,9 +10,9 @@
 libroot.so를 직접 호출)을 그대로 따라 arm64로 확장한 것입니다 — 새로운
 접근을 쓴 게 아니라, 같은 방식을 두 번째 아키텍처에 채워 넣은 것입니다.
 
-이 저장소는 arm64 전용/Haiku 전용 런타임·syscall 소스(`src/` — 표준
-라이브러리 전체에서 `*haiku*`로 이름 붙은 모든 파일과, Haiku용으로 수정한
-공유 파일 하나, 아래 설명), 빌드된 툴체인을 Haiku `.hpkg`로 만드는
+이 저장소는 arm64 전용/RenkuOS 전용 런타임·syscall 소스(`src/` — 표준
+라이브러리 전체에서 `*haiku*`로 이름 붙은 모든 파일과, RenkuOS용으로 수정한
+공유 파일 하나, 아래 설명), 빌드된 툴체인을 RenkuOS `.hpkg`로 만드는
 패키징 스크립트, 그리고 실제 서드파티 호환성 문제를 해결하는 로컬 Go
 모듈 프록시 오버라이드로 구성되어 있습니다. 전체 Go 소스 트리가 아닙니다 —
 다른 플랫폼 포트를 적용할 때와 똑같이, `korli/go` 체크아웃(또는 amd64용
@@ -30,10 +30,10 @@ GOOS=haiku GOARCH=arm64 GOROOT_BOOTSTRAP=/path/to/a/working/go ./make.bash
 
 이러면 한 GOROOT 안에 툴체인이 두 개 생깁니다: 다른 곳에서 `haiku/arm64`
 바이너리를 교차 빌드할 때 쓰는 호스트(예: `linux/arm64`)용 컴파일러, 그리고
-Haiku 위에서 직접 실행하도록 만들어진 진짜 Haiku ELF 바이너리인 네이티브
+RenkuOS 위에서 직접 실행하도록 만들어진 진짜 RenkuOS ELF 바이너리인 네이티브
 `bin/haiku_arm64/go` — 단순 교차 빌드 타깃이 아니라 자가 호스팅 SDK입니다.
 `scripts/cross-arm64-golang.sh`가 이 두 번째 것을 설치 가능한 `.hpkg`로
-패키징합니다(`golang_bin.recipe` 참고). 이 스크립트는 이 포트의 Haiku
+패키징합니다(`golang_bin.recipe` 참고). 이 스크립트는 이 포트의 RenkuOS
 이미지 자체를 빌드할 때 쓰는 것과 같은 Docker 빌드 컨테이너 안에서,
 빌드된 트리가 `GOROOT_SRC`에 있다고 가정하고 실행됩니다.
 
@@ -64,14 +64,14 @@ Haiku 위에서 직접 실행하도록 만들어진 진짜 Haiku ELF 바이너�
 블록되어 있는 M에 유저스페이스 시그널 트랩이 떨어지면 해당 M이 EINTR
 재시도 루프에서 계속 멈춰 있었습니다. 최소 재현 코드(`exec.Command
 ("/bin/sleep", "0")`)로 확인: Go의 핸들러가 설치된 상태에서는 반복
-시도 중 80~100%가 행, `signal.Ignore(syscall.SIGCHLD)`로는 0%. Haiku에서는
+시도 중 80~100%가 행, `signal.Ignore(syscall.SIGCHLD)`로는 0%. RenkuOS에서는
 SIGCHLD를 물려받은 기본 동작 그대로 두도록 수정했습니다
 (`sigInstallGoHandler()`가 `GOOS == "haiku"`일 때 SIGCHLD에 대해 `false`
 반환); 명시적으로 요청하는 프로그램은 `os/signal.Notify(syscall.SIGCHLD)`로
 여전히 핸들러를 다시 설치할 수 있습니다. 똑같은 위험이 `sigPreempt`
 (`SIGURG`)를 통해서도 다시 나타났습니다 — Go의 비동기 선점이 실행 중인
 M에 10~20ms마다 이 시그널을 보내는데, 실제 빌드는 몇 초 동안 수십 번
-fork+exec을 하므로 블록된 libc 호출 중에 떨어질 기회가 많습니다. Haiku에서
+fork+exec을 하므로 블록된 libc 호출 중에 떨어질 기회가 많습니다. RenkuOS에서
 비동기 선점을 비활성화해 수정했습니다(`const preemptMSupported = GOOS !=
 "haiku"` — Go 1.14가 비동기 선점을 도입하기 전까지 모든 Go 프로그램이
 기본으로 받아들였던 것과 같은 트레이드오프이고, `os_plan9.go`/`os_wasm.go`도

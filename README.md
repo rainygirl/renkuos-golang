@@ -1,8 +1,8 @@
-# Go for Haiku/arm64 (RenkuOS)
+# Go for RenkuOS/arm64
 
 [English](README.md) | [한국어](README.ko.md)
 
-A working Go 1.27.4 toolchain for `GOOS=haiku GOARCH=arm64`. Haiku's own Go
+A working Go 1.27.4 toolchain for `GOOS=haiku GOARCH=arm64`. RenkuOS's own Go
 fork, [korli/go](https://github.com/korli/go) (branch `golang-1.27-haiku`,
 also what HaikuPorts' `dev-lang/golang` recipe builds from), only supports
 `haiku/amd64`. This port extends that work to arm64, on the same libc-call
@@ -11,10 +11,10 @@ convention Go's own `darwin`/`solaris` ports use) -- not a different
 architecture for the port's own sake, the same approach, filled in for a
 second architecture.
 
-This repo is the arm64-specific and Haiku-specific runtime/syscall source
+This repo is the arm64-specific and RenkuOS-specific runtime/syscall source
 files (`src/`, every `*haiku*`-named file under the standard library plus
-the one shared file patched for Haiku -- see below), the packaging script
-that turns a built toolchain into a Haiku `.hpkg`, and a local Go module
+the one shared file patched for RenkuOS -- see below), the packaging script
+that turns a built toolchain into a RenkuOS `.hpkg`, and a local Go module
 proxy override that fixes a real third-party compatibility gap. It is not
 a full Go source tree: apply it on top of a `korli/go` checkout (or
 upstream Go, if korli/go's amd64 files aren't needed) the same way you'd
@@ -31,11 +31,11 @@ GOOS=haiku GOARCH=arm64 GOROOT_BOOTSTRAP=/path/to/a/working/go ./make.bash
 
 This produces two toolchains in one GOROOT: a host (e.g. `linux/arm64`)
 cross-compiler for building `haiku/arm64` binaries from elsewhere, and a
-native `bin/haiku_arm64/go` that is itself a real Haiku ELF binary, meant
-to run *on* Haiku -- a self-hosting SDK, not just a cross-compile target.
+native `bin/haiku_arm64/go` that is itself a real RenkuOS ELF binary, meant
+to run *on* RenkuOS -- a self-hosting SDK, not just a cross-compile target.
 `scripts/cross-arm64-golang.sh` stages the second one into an installable
 `.hpkg` (see `golang_bin.recipe`); it expects to run inside the same
-Docker-based build container this port's Haiku image itself uses, with the
+Docker-based build container this port's RenkuOS image itself uses, with the
 built tree at `GOROOT_SRC`.
 
 ## The two runtime bugs
@@ -68,13 +68,13 @@ just-forked, already-exited child -- exactly what every
 Confirmed with a minimal reproducer (`exec.Command("/bin/sleep", "0")`):
 ~80-100% hang rate across repeated trials with Go's handler installed, 0%
 with `signal.Ignore(syscall.SIGCHLD)`. Fixed by leaving SIGCHLD at its
-inherited disposition on Haiku (`sigInstallGoHandler()` returns `false`
+inherited disposition on RenkuOS (`sigInstallGoHandler()` returns `false`
 for it when `GOOS == "haiku"`); `os/signal.Notify(syscall.SIGCHLD)` still
 re-installs it on demand for programs that ask. The identical hazard
 showed up again via `sigPreempt` (`SIGURG`), which Go's async preemption
 fires every 10-20ms at a running M -- a real build forks+execs dozens of
 times over several seconds, giving it many chances to land during a
-blocked libc call. Fixed by disabling async preemption on Haiku
+blocked libc call. Fixed by disabling async preemption on RenkuOS
 (`const preemptMSupported = GOOS != "haiku"`, the same tradeoff every Go
 program accepted by default before Go 1.14, and the same one
 `os_plan9.go`/`os_wasm.go` already make for their own reasons). Cooperative
