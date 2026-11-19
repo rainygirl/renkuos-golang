@@ -1,0 +1,45 @@
+SUMMARY="Go compiler, standard library and tools for Haiku ARM64"
+DESCRIPTION="Native Go 1.27.4 toolchain for Haiku ARM64 (go, gofmt, the standard \
+library source, and the compile/link/asm/cgo/vet/cover/fix tool binaries), cross-built \
+with scripts/cross-arm64-golang.sh against a from-scratch RenkuOS/Go haiku/arm64 \
+runtime port -- this image had no prior Go support of any kind, and HaikuPorts has no \
+arm64 repository to depend on either. GOROOT is self-contained under lib/go; bin/gofmt \
+is a plain symlink into it, the same layout rust_bin uses for cargo/rustc. Revision 4 \
+makes bin/go a wrapper instead (the real binary moved to lib/go/bin/go-real), fixing two \
+things found building a real third-party web app: (1) this toolchain shipped with both \
+GOPROXY and GOSUMDB blank, so every module fetch failed outright (\"GOPROXY list is not \
+the empty string, but contains no entries\" / \"missing GOSUMDB\") until a user set them \
+by hand -- the wrapper now defaults both, same as a real Go install would, without \
+overriding a caller that already set them. (2) github.com/gin-gonic/gin (the most-used Go \
+web framework) failed to build at all: its default logger calls into \
+github.com/mattn/go-isatty, which ships one real/stub IsTerminal implementation per OS \
+family and has none that matches haiku, so IsTerminal/IsCygwinTerminal were undefined at \
+compile time -- confirmed building a real gin.Default() app with the vanilla module. \
+Fixed by adding haiku to the existing \"unsupported platform, just return false\" stub \
+(isatty_others.go, same safe default already used for js/wasm/appengine/tinygo/nacl -- \
+correct here too, since a terminal-color check over an SSH-piped session should say \"not \
+a terminal\" anyway) and shipping the patched module, repackaged at the same path and \
+version, as a local GOPROXY-protocol override directory the wrapper puts ahead of the \
+real proxy in GOPROXY (lib/go/haiku-goproxy/; GONOSUMDB also covers this one module, since \
+its content deliberately differs from the public checksum database). See \
+scripts/golang-goproxy-overrides/README.md for the exact patch and how to extend this to \
+another module with the same kind of gap. Confirmed end to end from a clean module cache: \
+fresh go mod init, go get github.com/gin-gonic/gin, go build, run, and a real HTTP 200 \
+from curl against a gin.Default() handler -- no manual replace directive, no pre-seeded \
+cache, just this package's own defaults."
+HOMEPAGE="https://go.dev/"
+VERSION="1.27.4"
+REVISION="4"
+LICENSE="BSD (3-clause)"
+COPYRIGHT="2009 The Go Authors"
+ARCHITECTURES_SUPPORTED="arm64"
+
+PROVIDES="golang_bin = $VERSION
+cmd:go = $VERSION
+cmd:gofmt = $VERSION"
+REQUIRES="haiku"
+
+NOTE="cross-built, not haikuporter-built: see scripts/cross-arm64-golang.sh for how \
+the .hpkg under prebuilt/arm64/ was produced"
+
+PREBUILT_PACKAGES="pkgman-repo/prebuilt/arm64/golang_bin-$VERSION-$REVISION-arm64.hpkg"
