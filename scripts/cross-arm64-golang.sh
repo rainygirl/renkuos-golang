@@ -58,12 +58,17 @@
 # launch job (renku_grow_boot, arm64-patch 0046), which a headless QEMU
 # instance with no desktop session never runs, and invoking it directly over
 # SSH without that session reports "the boot partition already fills" rather
-# than growing it -- not something this script or the runtime fix caused.
-# Native self-hosted `go build` on real RenkuOS (with a desktop session, so
-# the volume grows normally) is accordingly still unverified and worth
-# doing before calling this package fully proven, though the underlying
-# runtime bug this was blocked on investigating is independently confirmed
-# fixed via the cross-built binaries above.
+# than growing it. That caveat turned out not to block verification on an
+# already-installed image whose boot volume had already grown once (through
+# an earlier desktop session, e.g. during Installer): confirmed later,
+# against the actual installed -4 package over plain SSH (no desktop
+# session involved), with GOCACHE pointed at a clean directory: `go build
+# std` -- the entire standard library, hundreds of packages, many real
+# fork/execs -- completed with exit code 0 in ~52s real time, using the
+# package's own native bin/haiku_arm64/go (shipped as lib/go/bin/go-real)
+# to build itself. A from-scratch image that only ever boots headless over
+# SSH, never through a desktop session, would still hit the volume-growth
+# limit; that specific case remains unverified.
 set -e
 VER=1.27.4
 REV=${REV:-1}
@@ -84,20 +89,28 @@ cp "$GOROOT_SRC/bin/haiku_arm64/gofmt" "$root/lib/go/bin/"
 # blank, which breaks every module fetch with "GOPROXY list is ... no
 # entries" / "missing GOSUMDB" until a user sets them by hand) and adds a
 # local GOPROXY-protocol override directory ahead of the real proxy, so
-# modules with no haiku build tag that this override covers (currently
-# just github.com/mattn/go-isatty, which github.com/gin-gonic/gin's
-# default logger needs -- see scripts/golang-goproxy-overrides/README.md)
-# work out of the box. All three are only defaults: an already-set
-# GOPROXY/GOSUMDB from the caller's own environment is left alone.
+# modules with no haiku build tag that this override covers work out of
+# the box -- currently github.com/mattn/go-isatty (which
+# github.com/gin-gonic/gin's default logger needs) and, far more broadly,
+# golang.org/x/sys itself: the public module has no haiku support in any
+# version, at all (confirmed: zero haiku-named files in golang.org/x/sys's
+# own unix/ package), which silently breaks any third-party module that
+# imports golang.org/x/sys/unix directly -- a very large share of the
+# ecosystem, well beyond gin's own narrower go-isatty dependency. See
+# scripts/golang-goproxy-overrides/README.md for both patches and how to
+# extend this to another module with the same kind of gap. All three
+# defaults here are only defaults: an already-set GOPROXY/GOSUMDB/GONOSUMDB
+# from the caller's own environment is left alone.
 cat > "$root/lib/go/bin/go" <<'WRAP'
 #!/bin/sh
 export GOPROXY="${GOPROXY:-file:///boot/system/lib/go/haiku-goproxy,https://proxy.golang.org,direct}"
 export GOSUMDB="${GOSUMDB:-sum.golang.org}"
-export GONOSUMDB="github.com/mattn/go-isatty${GONOSUMDB:+,$GONOSUMDB}"
+export GONOSUMDB="github.com/mattn/go-isatty,golang.org/x/sys${GONOSUMDB:+,$GONOSUMDB}"
 exec /boot/system/lib/go/bin/go-real "$@"
 WRAP
 chmod +x "$root/lib/go/bin/go"
 cp -r "$(dirname "$0")/golang-goproxy-overrides/github.com" "$root/lib/go/haiku-goproxy/github.com"
+cp -r "$(dirname "$0")/golang-goproxy-overrides/golang.org" "$root/lib/go/haiku-goproxy/golang.org"
 cp -r "$GOROOT_SRC/pkg/tool/haiku_arm64" "$root/lib/go/pkg/tool/haiku_arm64"
 # pkg/include (textflag.h, funcdata.h, asm_*.h) was missing from every
 # earlier revision of this package: the `asm` tool's `-gensymabis` step
@@ -136,7 +149,7 @@ name		golang_bin
 version		$VER-$REV
 architecture	arm64
 summary		"Go compiler, standard library and tools for Haiku ARM64"
-description	"Native Go $VER toolchain for Haiku ARM64 (go, gofmt, the standard library source, and the compile/link/asm/cgo/vet/cover/fix tool binaries). Cross-built from upstream Go's source against a from-scratch RenkuOS/Go haiku/arm64 runtime port -- this image has no prior Go support of any kind, and HaikuPorts has no arm64 repository to depend on either. GOROOT is self-contained under lib/go; bin/gofmt is a plain symlink into it, bin/go is a wrapper (the real binary is lib/go/bin/go-real) that defaults GOPROXY/GOSUMDB and layers in a local module override for github.com/mattn/go-isatty, which github.com/gin-gonic/gin needs and has no haiku build tag upstream -- see golang_bin.recipe and scripts/golang-goproxy-overrides/README.md."
+description	"Native Go $VER toolchain for Haiku ARM64 (go, gofmt, the standard library source, and the compile/link/asm/cgo/vet/cover/fix tool binaries). Cross-built from upstream Go's source against a from-scratch RenkuOS/Go haiku/arm64 runtime port -- this image has no prior Go support of any kind, and HaikuPorts has no arm64 repository to depend on either. GOROOT is self-contained under lib/go; bin/gofmt is a plain symlink into it, bin/go is a wrapper (the real binary is lib/go/bin/go-real) that defaults GOPROXY/GOSUMDB and layers in local module overrides for github.com/mattn/go-isatty (which github.com/gin-gonic/gin needs) and golang.org/x/sys (which has no haiku support in any published version at all, breaking any module that imports golang.org/x/sys/unix directly) -- see golang_bin.recipe and scripts/golang-goproxy-overrides/README.md."
 packager	"RENKU <renku@localhost>"
 vendor		"RENKU"
 copyrights {

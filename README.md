@@ -90,7 +90,15 @@ program accepted by default before Go 1.14, and the same one
 `os_plan9.go`/`os_wasm.go` already make for their own reasons). Cooperative
 (function-call-based) preemption is unaffected. Verified end to end with
 `go build std` -- the entire standard library, hundreds of packages, many
-real fork/execs -- completing with exit code 0 from a clean build cache.
+real fork/execs -- completing with exit code 0 from a clean build cache,
+both cross-built and, later, self-hosted: the real, already-installed
+package's own native `bin/haiku_arm64/go` building the standard library
+on the actual target machine, over plain SSH (no desktop session), in
+~52s. One intermittent flake was found doing this repeatedly (one failed
+run out of roughly a dozen clean-cache attempts, no error text captured,
+memory usage ruled out as a cause -- free memory never dropped below
+~7.5 of 8 GiB during the one failing run) and is not yet root-caused;
+every other attempt, including five more immediately afterward, passed.
 
 A separate packaging gap (`pkg/include/` -- `textflag.h`, `funcdata.h`,
 the `asm_*.h` headers -- never staged into the `.hpkg`, so any asm-based
@@ -99,22 +107,45 @@ it) is fixed in `scripts/cross-arm64-golang.sh`, not in `src/`.
 
 ## Third-party module compatibility (`scripts/golang-goproxy-overrides/`)
 
-No build-tag issue in the standard library -- a real gap in the module
-ecosystem instead: `github.com/mattn/go-isatty` (which
-`github.com/gin-gonic/gin`'s default logger needs) ships one terminal
-implementation per OS family and has none that matches `haiku`, so
-`IsTerminal`/`IsCygwinTerminal` are `undefined` at build time for any
-module that pulls it in. The packaged `golang_bin`'s `bin/go` is a wrapper
-(the real binary is `bin/go-real`) that defaults `GOPROXY`/`GOSUMDB` (this
+No build-tag issue in the standard library -- real gaps in the module
+ecosystem instead. The packaged `golang_bin`'s `bin/go` is a wrapper (the
+real binary is `bin/go-real`) that defaults `GOPROXY`/`GOSUMDB` (this
 toolchain shipped with both blank) and puts a local GOPROXY-protocol
-directory ahead of the real proxy, serving a one-line patch to go-isatty
-(add `haiku` to its existing "unsupported platform, return false" stub)
-repackaged at the same module path and version. See that directory's own
-README for the exact patch and how to extend it to another module with
-the same kind of gap. Verified end to end from a clean module cache: a
-fresh `go mod init`, `go get github.com/gin-gonic/gin`, `go build`, run,
-and a real HTTP 200 from `curl` against a `gin.Default()` handler -- no
-manual `replace` directive, no pre-seeded cache.
+directory ahead of the real proxy, serving patched modules repackaged at
+the same module path and version. See that directory's own README for
+the exact patches and how to extend this to another module with the same
+kind of gap.
+
+**`github.com/mattn/go-isatty`** (which `github.com/gin-gonic/gin`'s
+default logger needs) ships one terminal implementation per OS family and
+has none that matches `haiku`, so `IsTerminal`/`IsCygwinTerminal` are
+`undefined` at build time for any module that pulls it in. Fixed with a
+one-line patch (add `haiku` to its existing "unsupported platform, return
+false" stub). Verified end to end from a clean module cache: a fresh
+`go mod init`, `go get github.com/gin-gonic/gin`, `go build`, run, and a
+real HTTP 200 from `curl` against a `gin.Default()` handler -- no manual
+`replace` directive, no pre-seeded cache.
+
+**`golang.org/x/sys`** has no `haiku` support in any published version,
+at all -- confirmed by cloning it directly and grepping every version of
+`unix/*.go` for `haiku`: zero matches. Any module that imports
+`golang.org/x/sys/unix` directly (not through something like
+`golang.org/x/term`, which has its own safe fallback and never actually
+reaches `x/sys/unix` on `haiku`) fails outright, a far larger share of
+the ecosystem than go-isatty's own gap. Not patched from scratch here:
+ported from `korli/go`'s own sibling fork,
+[korli/sys_haiku](https://github.com/korli/sys_haiku) (its
+`master-haiku` branch, carrying a real `amd64`-only Haiku port of this
+module for years), plus this port's own already-existing `arm64`
+extension of the same files (this repo's own
+`src/cmd/vendor/golang.org/x/sys/unix/*_arm64*`, reused unchanged),
+applied onto a clean `v0.50.0` checkout. Verified end to end on the real
+target machine, not just cross-compiled: a small program built against
+the patched tree, copied to the live machine over SSH, and run there --
+`unix.Stat` on a real path, a full `Socket`/`Bind`/`Getsockname` round
+trip, and `IoctlGetTermios` on a non-tty fd (the exact call go-isatty
+itself makes) all returned correct results, and the whole module (`go
+build ./...`, every non-Windows/non-Plan9 package in it) builds clean.
 
 ## License
 

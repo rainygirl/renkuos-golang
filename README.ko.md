@@ -88,7 +88,15 @@ fork+exec을 하므로 블록된 libc 호출 중에 떨어질 기회가 많습�
 각자의 이유로 이미 같은 선택을 하고 있습니다). 함수 호출 기반의 협조적
 선점은 영향받지 않습니다. `go build std` — 표준 라이브러리 전체, 수백 개
 패키지, 실제 fork/exec 다수 — 가 깨끗한 빌드 캐시에서 exit code 0으로
-끝나는 것으로 끝까지 검증했습니다.
+끝나는 것으로 끝까지 검증했습니다. 교차 빌드로도, 그리고 나중에는
+셀프호스팅으로도 확인했습니다 — 실제로 이미 설치된 패키지 자신의
+네이티브 `bin/haiku_arm64/go`가 실제 타깃 머신에서, 평범한 SSH로(데스크탑
+세션 없이), 표준 라이브러리를 ~52초에 빌드했습니다. 이걸 여러 번
+반복하다가 간헐적인 결함 하나를 발견했습니다(깨끗한 캐시로 시도한
+대략 열두 번 중 한 번 실패, 에러 텍스트는 잡지 못했고, 메모리는 원인에서
+제외했습니다 — 실패한 그 한 번도 여유 메모리가 8GiB 중 7.5GiB 아래로
+내려간 적이 없습니다) — 아직 근본 원인은 못 찾았습니다. 그 직후 다섯 번을
+더 포함해 다른 모든 시도는 전부 통과했습니다.
 
 별개의 패키징 누락(`pkg/include/` — `textflag.h`, `funcdata.h`,
 `asm_*.h` 헤더들이 `.hpkg`에 전혀 담기지 않아, 위 두 버그가 더 이상
@@ -97,22 +105,43 @@ fork+exec을 하므로 블록된 libc 호출 중에 떨어질 기회가 많습�
 
 ## 서드파티 모듈 호환성 (`scripts/golang-goproxy-overrides/`)
 
-표준 라이브러리의 빌드 태그 문제가 아니라 모듈 생태계 자체의 실제 공백입니다:
-`github.com/gin-gonic/gin`의 기본 로거가 쓰는 `github.com/mattn/go-isatty`가
-OS별로 터미널 구현 파일을 하나씩 두고 있는데 `haiku`와 맞는 게 하나도
-없어서, 이 모듈을 끌어오는 어떤 모듈이든 빌드 시점에
-`IsTerminal`/`IsCygwinTerminal`이 `undefined`가 됩니다. 패키징된
-`golang_bin`의 `bin/go`는 래퍼입니다(진짜 바이너리는 `bin/go-real`) —
-`GOPROXY`/`GOSUMDB` 기본값을 지정하고(이 툴체인은 둘 다 빈 값으로
-배포되어 있었습니다), 실제 proxy보다 앞에 로컬 GOPROXY 프로토콜 디렉터리를
-두어 go-isatty에 한 줄 패치(기존에 있던 "지원 안 되는 플랫폼은 false
-반환" 스텁에 `haiku` 추가)를 적용한 뒤 같은 모듈 경로·버전으로 다시
-패키징해 서빙합니다. 정확한 패치 내용과 같은 종류의 공백이 있는 다른
-모듈로 확장하는 방법은 해당 디렉터리의 README를 참고하세요. 모듈 캐시를
-완전히 비운 상태에서 끝까지 검증했습니다: 새 `go mod init`, `go get
-github.com/gin-gonic/gin`, `go build`, 실행, 그리고 `gin.Default()`
-핸들러에 대한 실제 `curl` HTTP 200 — 수동 `replace` 지시어도, 미리
-채워둔 캐시도 없이.
+표준 라이브러리의 빌드 태그 문제가 아니라 모듈 생태계 자체의 실제 공백입니다.
+패키징된 `golang_bin`의 `bin/go`는 래퍼입니다(진짜 바이너리는
+`bin/go-real`) — `GOPROXY`/`GOSUMDB` 기본값을 지정하고(이 툴체인은 둘 다
+빈 값으로 배포되어 있었습니다), 실제 proxy보다 앞에 로컬 GOPROXY 프로토콜
+디렉터리를 두어 패치된 모듈들을 같은 모듈 경로·버전으로 서빙합니다.
+정확한 패치 내용과 같은 종류의 공백이 있는 다른 모듈로 확장하는 방법은
+해당 디렉터리의 README를 참고하세요.
+
+**`github.com/mattn/go-isatty`**(`github.com/gin-gonic/gin`의 기본
+로거가 씀)는 OS별로 터미널 구현 파일을 하나씩 두고 있는데 `haiku`와 맞는
+게 하나도 없어서, 이 모듈을 끌어오는 어떤 모듈이든 빌드 시점에
+`IsTerminal`/`IsCygwinTerminal`이 `undefined`가 됩니다. 한 줄 패치로
+고쳤습니다(기존에 있던 "지원 안 되는 플랫폼은 false 반환" 스텁에 `haiku`
+추가). 모듈 캐시를 완전히 비운 상태에서 끝까지 검증했습니다: 새 `go mod
+init`, `go get github.com/gin-gonic/gin`, `go build`, 실행, 그리고
+`gin.Default()` 핸들러에 대한 실제 `curl` HTTP 200 — 수동 `replace`
+지시어도, 미리 채워둔 캐시도 없이.
+
+**`golang.org/x/sys`**는 어떤 배포 버전에도 `haiku` 지원이 전혀 없습니다 —
+직접 클론해서 모든 버전의 `unix/*.go`에 `haiku`를 grep해봐도 일치하는 게
+하나도 없는 걸로 확인했습니다. `golang.org/x/sys/unix`를 직접 임포트하는
+모듈은(`golang.org/x/term`처럼 자체 안전한 폴백이 있어서 `haiku`에서
+`x/sys/unix`에 실제로 닿지 않는 경우가 아니라면) 전부 빌드가 깨지는데,
+이는 go-isatty의 공백보다 훨씬 더 큰, 생태계의 큰 부분입니다. 여기서
+새로 패치한 게 아니라, `korli/go`의 자매 포크인
+[korli/sys_haiku](https://github.com/korli/sys_haiku)(`master-haiku`
+브랜치, 이 모듈의 실제 `amd64` 전용 Haiku 포트를 몇 년째 유지하고
+있음)에서 가져오고, 거기에 이 포트 자신이 이미 갖고 있던 `arm64` 확장
+파일들(이 저장소 자신의
+`src/cmd/vendor/golang.org/x/sys/unix/*_arm64*`, 그대로 재사용)을 더해
+깨끗한 `v0.50.0` 체크아웃 위에 적용했습니다. 교차 빌드만이 아니라 실제
+타깃 머신에서 끝까지 검증했습니다: 패치된 트리로 빌드한 작은 프로그램을
+SSH로 실제 머신에 복사해서 그 위에서 실행 — `unix.Stat`을 실제 경로에
+대해, `Socket`/`Bind`/`Getsockname` 전체 라운드트립을, 그리고 (go-isatty
+자신이 실제로 호출하는 것과 똑같은) tty가 아닌 fd에 대한
+`IoctlGetTermios`를 — 전부 올바른 결과를 돌려줬고, 모듈 전체(`go build
+./...`, Windows/Plan9를 뺀 모든 패키지)가 깨끗하게 빌드됩니다.
 
 ## 라이선스
 

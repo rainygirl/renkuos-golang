@@ -5,7 +5,7 @@ with scripts/cross-arm64-golang.sh against a from-scratch RenkuOS/Go haiku/arm64
 runtime port -- this image had no prior Go support of any kind, and HaikuPorts has no \
 arm64 repository to depend on either. GOROOT is self-contained under lib/go; bin/gofmt \
 is a plain symlink into it, the same layout rust_bin uses for cargo/rustc. Revision 4 \
-makes bin/go a wrapper instead (the real binary moved to lib/go/bin/go-real), fixing two \
+made bin/go a wrapper instead (the real binary moved to lib/go/bin/go-real), fixing two \
 things found building a real third-party web app: (1) this toolchain shipped with both \
 GOPROXY and GOSUMDB blank, so every module fetch failed outright (\"GOPROXY list is not \
 the empty string, but contains no entries\" / \"missing GOSUMDB\") until a user set them \
@@ -20,16 +20,27 @@ Fixed by adding haiku to the existing \"unsupported platform, just return false\
 correct here too, since a terminal-color check over an SSH-piped session should say \"not \
 a terminal\" anyway) and shipping the patched module, repackaged at the same path and \
 version, as a local GOPROXY-protocol override directory the wrapper puts ahead of the \
-real proxy in GOPROXY (lib/go/haiku-goproxy/; GONOSUMDB also covers this one module, since \
-its content deliberately differs from the public checksum database). See \
-scripts/golang-goproxy-overrides/README.md for the exact patch and how to extend this to \
+real proxy in GOPROXY. Revision 5 adds the same treatment for golang.org/x/sys, which \
+has no haiku support in any published version at all, breaking any module that imports \
+golang.org/x/sys/unix directly (a far larger share of the ecosystem than go-isatty's own \
+gap) -- ported from korli/go's own sibling fork korli/sys_haiku (its master-haiku branch, \
+amd64 only) plus this port's own already-existing arm64 extension of the same files \
+(cmd/vendor/golang.org/x/sys/unix/*_arm64* in this port's own src/ tree), applied onto a \
+clean v0.50.0 checkout. GONOSUMDB covers both overridden modules, since their content \
+deliberately differs from the public checksum database. See \
+scripts/golang-goproxy-overrides/README.md for both patches and how to extend this to \
 another module with the same kind of gap. Confirmed end to end from a clean module cache: \
 fresh go mod init, go get github.com/gin-gonic/gin, go build, run, and a real HTTP 200 \
-from curl against a gin.Default() handler -- no manual replace directive, no pre-seeded \
-cache, just this package's own defaults."
+from curl against a gin.Default() handler; separately, a small program built against the \
+patched x/sys/unix tree and run on the real target machine over SSH, exercising Stat, a \
+full Socket/Bind/Getsockname round trip, and IoctlGetTermios -- no manual replace \
+directive, no pre-seeded cache, just this package's own defaults. Also confirmed, on the \
+same real, already-installed -4 package over plain SSH (no desktop session): a clean-cache \
+\`go build std\` (the entire standard library, many real fork/execs) using the package's \
+own native bin/haiku_arm64/go to build itself, exit 0, ~52s."
 HOMEPAGE="https://go.dev/"
 VERSION="1.27.4"
-REVISION="4"
+REVISION="5"
 LICENSE="BSD (3-clause)"
 COPYRIGHT="2009 The Go Authors"
 ARCHITECTURES_SUPPORTED="arm64"
@@ -39,7 +50,24 @@ cmd:go = $VERSION
 cmd:gofmt = $VERSION"
 REQUIRES="haiku"
 
+# Provenance of the upstream source this was built from -- not a
+# haikuporter SOURCE_URI/CHECKSUM_SHA256 this recipe can actually be
+# built with (see NOTE below), but the exact same values HaikuPorts'
+# own dev-lang/golang recipe uses for the x86_64 build, confirmed by
+# downloading and hashing this URL directly: the arm64 runtime port in
+# this port's own src/ tree is applied on top of exactly this tree, not
+# a different one.
+SOURCE_URI="https://github.com/korli/go/archive/go1.27.4-haiku.tar.gz"
+SOURCE_DIR="go-go1.27.4-haiku"
+CHECKSUM_SHA256="f3d5c413020820a685800a5d665212661db14889e852ace571599ab28cc8fde1"
+
 NOTE="cross-built, not haikuporter-built: see scripts/cross-arm64-golang.sh for how \
-the .hpkg under prebuilt/arm64/ was produced"
+the .hpkg under prebuilt/arm64/ was produced. SOURCE_URI/CHECKSUM_SHA256 above are \
+provenance only (what korli/go source this port's own src/ files were applied onto), \
+not something haikuporter can actually build from with a plain BUILD()/INSTALL(): the \
+arm64 runtime port itself (the files under this repo's own src/, copied on top of that \
+source tree file for file) and the host-vs-native dual-toolchain build \
+(GOOS=haiku GOARCH=arm64 ./make.bash against a linux/arm64 bootstrap compiler, run inside \
+the project's own haiku-builder Docker container) aren't expressible in that format."
 
 PREBUILT_PACKAGES="pkgman-repo/prebuilt/arm64/golang_bin-$VERSION-$REVISION-arm64.hpkg"
