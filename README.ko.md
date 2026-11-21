@@ -152,6 +152,45 @@ SSH로 실제 머신에 복사해서 그 위에서 실행 — `unix.Stat`을 실
 `IoctlGetTermios`를 — 전부 올바른 결과를 돌려줬고, 모듈 전체(`go build
 ./...`, Windows/Plan9를 뺀 모든 패키지)가 깨끗하게 빌드됩니다.
 
+다만 이 오버라이드는 정확한 버전에만 걸려 있습니다 — 가정이 아니라 실제
+한계입니다: `github.com/shirou/gopsutil/v3`는 자기 `go.mod`에 따라
+`golang.org/x/sys v0.20.0`로 해석됐는데, 이 오버라이드가 아직 다루지
+않는 버전이라 실제(패치 안 된) proxy로 떨어졌습니다. 같은
+`unix.Stat`을 쓰는 프로그램을 `v0.50.0`(정상)과 `v0.20.0`
+(`undefined: unix.Stat_t`)에 각각 빌드해봐서 이 버전 공백이 실제임을
+직접 확인했습니다. 지금은 하나가 아니라 `v0.41.0`부터 `v0.50.0`까지
+열 개 버전을 다루도록 넓혔는데, 도움은 되지만 공백을 완전히 없애지는
+못합니다 — 자세한 내용과, 실제로는 이 경로를 전혀 타지 않은 두 개의
+실제 서드파티 모듈(`fasthttp`, `gopsutil`) 이야기는
+`scripts/golang-goproxy-overrides/README.md`를 참고하세요.
+
+## cgo
+
+`CGO_ENABLED=1`은 이걸 찾아서 고치기 전까지는 전혀 동작하지 않았습니다:
+cgo 프로그램을 링크하면 무조건 `relocation R_AARCH64_ADR_PREL_PG_HI21
+against symbol 'poll' which may bind externally ... recompile with
+-fPIC`로 실패했습니다. `cmd/link/internal/ld/data.go`의 `dynreloc()`에서
+근본 원인을 찾았습니다: Go는 외부 링킹(cgo가 항상 쓰는 방식)일 때는
+항상 `FlagD`(동적 로더 형식 출력 억제)를 설정하는데, 그러면
+`cgo_import_dynamic` 데이터 심볼의 주소 참조 relocation을 GOT 경유로
+바꿔주는 `dynrelocsym()` 패스가 무조건 스킵됩니다. Haiku의 libc-call
+방식 포트는 바로 이 재작성이 필요합니다 — 컴파일러가 런타임 자신의
+`libc_poll`(`netpoll_haiku.go`) 같은 심볼의 주소를 그냥 페이지 상대
+ADRP+ADD로 생성해두고, gcc/ld에 넘기기 전에 링커가 GOT 상대 주소로
+바꿔주는 걸 전제하기 때문입니다 — 다른 플랫폼은 전부 이 재작성이
+필요 없거나(syscall 기반 포트) 다른 방식으로 처리합니다. 처음 시도한
+수정(Haiku에 한해 `FlagD` 자체를 건너뜀)은 진짜 `.dynsym`/`.hash`/
+`.got.plt`까지 통째로 만들어버렸는데, 이건 평범한 외부 링크용 객체
+파일을 만드는 것과 충돌해서 링커 자신의 객체 작성 코드가
+`internal error: ElfShdr relocSect`로 죽었습니다. 실제로 동작하는
+수정은 `FlagD`가 설정된 상태에서도 Haiku에 대해서만 그 `Textp`
+relocation 재작성 루프 하나만 돌리고, `FlagD`가 원래 건너뛰던 나머지는
+그대로 다 건너뛰는 것입니다. 끝까지 검증했습니다: 실제 C 함수를
+호출하고 C 문자열을 Go로 다시 변환하는 cgo 프로그램(`C.add`,
+`C.CString`/`C.GoString`)이 정상적으로 빌드되고 실행되며, 기존의
+고루틴/`os/exec`/go-isatty 스모크 테스트와 전체 `go build std`도
+회귀 없이 그대로 통과합니다.
+
 ## 라이선스
 
 BSD 3-Clause, Go 자체와 같은 라이선스입니다 — 이 파일들은 Go 자체의

@@ -156,6 +156,46 @@ trip, and `IoctlGetTermios` on a non-tty fd (the exact call go-isatty
 itself makes) all returned correct results, and the whole module (`go
 build ./...`, every non-Windows/non-Plan9 package in it) builds clean.
 
+This override is keyed by exact version, though -- a real limitation,
+not a hypothetical one: `github.com/shirou/gopsutil/v3` resolved to
+`golang.org/x/sys v0.20.0` via its own `go.mod`, a version this override
+didn't cover, and fell through to the real (unpatched) proxy; confirmed
+directly that this version gap is real by building the same
+`unix.Stat`-using program against both `v0.50.0` (clean) and `v0.20.0`
+(`undefined: unix.Stat_t`). Now covers `v0.41.0` through `v0.50.0` (ten
+versions) rather than just one, which helps but doesn't eliminate the
+gap -- see `scripts/golang-goproxy-overrides/README.md` for the details
+and for two real third-party modules (`fasthttp`, `gopsutil`) that
+turned out not to actually exercise this path at all.
+
+## cgo
+
+`CGO_ENABLED=1` didn't work at all until this was found and fixed:
+linking any cgo program failed with `relocation
+R_AARCH64_ADR_PREL_PG_HI21 against symbol 'poll' which may bind
+externally ... recompile with -fPIC`. Root cause, in
+`cmd/link/internal/ld/data.go`'s `dynreloc()`: Go always sets `FlagD`
+(suppress dynamic-loader-format output) when linking externally, which
+cgo always does -- and that unconditionally skipped the `dynrelocsym()`
+pass that rewrites a `cgo_import_dynamic` data symbol's address-of
+relocation to go through the GOT. Haiku's libc-call-style port needs
+that rewrite specifically: the compiler emits a plain page-relative
+ADRP+ADD for taking the address of something like the runtime's own
+`libc_poll` (`netpoll_haiku.go`), and relies on the linker to turn that
+into GOT-relative addressing before handing the object to gcc/ld -- a
+rewrite every other platform either doesn't need (syscall-based ports)
+or gets some other way. The first fix attempt (skip `FlagD` for Haiku
+entirely) built a full `.dynsym`/`.hash`/`.got.plt` as well, which
+conflicts with producing a plain external-linkable object and crashed
+the linker's own object writer (`internal error: ElfShdr relocSect`).
+The fix that actually works runs only the one `Textp` relocation-rewrite
+loop for Haiku when `FlagD` is set, leaving everything else `FlagD`
+gates skipped exactly as before. Confirmed end to end: a cgo program
+calling a real C function and converting a C string back to Go
+(`C.add`, `C.CString`/`C.GoString`) builds and runs correctly, and the
+existing goroutine/`os/exec`/go-isatty smoke tests plus a full `go build
+std` still pass with no regression.
+
 ## License
 
 BSD 3-Clause, the same license as Go itself -- these are platform-port

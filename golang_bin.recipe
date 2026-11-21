@@ -26,21 +26,43 @@ golang.org/x/sys/unix directly (a far larger share of the ecosystem than go-isat
 gap) -- ported from korli/go's own sibling fork korli/sys_haiku (its master-haiku branch, \
 amd64 only) plus this port's own already-existing arm64 extension of the same files \
 (cmd/vendor/golang.org/x/sys/unix/*_arm64* in this port's own src/ tree), applied onto a \
-clean v0.50.0 checkout. GONOSUMDB covers both overridden modules, since their content \
-deliberately differs from the public checksum database. See \
-scripts/golang-goproxy-overrides/README.md for both patches and how to extend this to \
-another module with the same kind of gap. Confirmed end to end from a clean module cache: \
-fresh go mod init, go get github.com/gin-gonic/gin, go build, run, and a real HTTP 200 \
-from curl against a gin.Default() handler; separately, a small program built against the \
-patched x/sys/unix tree and run on the real target machine over SSH, exercising Stat, a \
-full Socket/Bind/Getsockname round trip, and IoctlGetTermios -- no manual replace \
-directive, no pre-seeded cache, just this package's own defaults. Also confirmed, on the \
-same real, already-installed -4 package over plain SSH (no desktop session): a clean-cache \
-\`go build std\` (the entire standard library, many real fork/execs) using the package's \
-own native bin/haiku_arm64/go to build itself, exit 0, ~52s."
+clean checkout of each of v0.41.0 through v0.50.0 (ten versions, covering roughly the \
+last year and a half of releases, since the override is keyed by exact version and a \
+dependency graph can resolve to any of them via Go's minimum-version-selection -- \
+confirmed this matters: the same direct-unix.Stat program that builds clean against the \
+patched v0.50.0 fails with undefined: unix.Stat_t against unpatched v0.20.0, fetched from \
+the real proxy since that version isn't in the override). GONOSUMDB covers both \
+overridden modules, since their content deliberately differs from the public checksum \
+database. See scripts/golang-goproxy-overrides/README.md for both patches and how to \
+extend this to another module with the same kind of gap. Confirmed end to end from a \
+clean module cache: fresh go mod init, go get github.com/gin-gonic/gin, go build, run, \
+and a real HTTP 200 from curl against a gin.Default() handler; separately, a small \
+program built against the patched x/sys/unix tree and run on the real target machine \
+over SSH, exercising Stat, a full Socket/Bind/Getsockname round trip, and \
+IoctlGetTermios -- no manual replace directive, no pre-seeded cache, just this package's \
+own defaults. Also confirmed, on the same real, already-installed package over plain SSH \
+(no desktop session): a clean-cache \`go build std\` (the entire standard library, many \
+real fork/execs) using the package's own native bin/haiku_arm64/go to build itself, exit \
+0. Revision 9 fixes CGO_ENABLED=1 entirely: linking any cgo program failed with \
+\`relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol 'poll' which may bind externally \
+... recompile with -fPIC\`, traced to cmd/link/internal/ld/data.go's dynreloc(): Go \
+forces FlagD (suppress dynamic-loader-format output) whenever linking externally, which \
+cgo always does, and that unconditionally skipped the dynrelocsym() pass that rewrites a \
+cgo_import_dynamic data symbol's address-of relocation (e.g. runtime's own libc_poll, \
+netpoll_haiku.go) to go through the GOT -- needed on Haiku's libc-call-style port \
+specifically, since the compiler emits a plain page-relative ADRP+ADD for this and relies \
+on that linker-side rewrite to happen before handing the object to gcc/ld. Fixed by \
+running just that one Textp relocation-rewrite loop for Haiku even when FlagD is set, \
+while still skipping everything else FlagD normally skips (building a real \
+.dynsym/.hash/.got.plt too, tried first, conflicts with producing a plain \
+external-linkable object and crashed the linker's own object writer with \`internal \
+error: ElfShdr relocSect\`). Confirmed end to end: a cgo program calling a real C \
+function and converting a C string back to Go (C.add, C.CString/C.GoString) builds and \
+runs correctly, and the existing goroutine/os-exec/go-isatty smoke tests plus a full \
+\`go build std\` still pass with no regression."
 HOMEPAGE="https://go.dev/"
 VERSION="1.27.4"
-REVISION="5"
+REVISION="9"
 LICENSE="BSD (3-clause)"
 COPYRIGHT="2009 The Go Authors"
 ARCHITECTURES_SUPPORTED="arm64"

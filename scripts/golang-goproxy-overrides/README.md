@@ -145,3 +145,43 @@ package compiles, but that its syscall-dispatch path actually works
 against the real kernel. Also confirmed the whole module still builds
 clean end to end (`go build ./...`, every non-Windows/non-Plan9 package
 in it, not just `unix`) with no other gaps.
+
+### A real limitation found testing this against actual third-party modules
+
+This override is keyed by *exact* module version -- the GOPROXY
+file-protocol directory only has an entry for each version actually
+built here. Go's minimum-version-selection can resolve a dependency
+graph to a `golang.org/x/sys` version this override never covered, and
+when it does, that version falls through to the real public proxy and
+builds unpatched -- confirmed directly: `github.com/shirou/gopsutil/v3`
+resolved to `golang.org/x/sys v0.20.0` via its own `go.mod`, which this
+override didn't yet cover, fetched from the real proxy instead, and
+would have failed exactly like go-isatty's original bug if gopsutil's
+own code actually reached `x/sys/unix` on `haiku` (it doesn't -- see
+below). Confirmed the failure mode directly too: the same
+direct-`unix.Stat` program that builds clean against the patched
+`v0.50.0` fails with `undefined: unix.Stat_t` against the real,
+unpatched `v0.20.0`.
+
+Mitigated, not solved: this directory now covers `v0.41.0` through
+`v0.50.0` (ten versions, roughly the last year and a half of releases,
+each patched and verified the same way as `v0.50.0` above), which
+covers whatever a dependency graph resolves to far more often than a
+single pinned version did, but a module requiring something older, or a
+version released after this was last updated, still falls through
+unpatched. Extending coverage further is mechanical (see "Rebuilding"
+above) -- there's no reason not to add more versions as gaps surface.
+
+### Two real popular modules tried, neither actually exercised this
+
+`github.com/valyala/fasthttp` and the `gopsutil` package above both
+built and ran correctly against this port (a real `ListenAndServe`
+server answering a real `curl`; `gopsutil`'s `mem.VirtualMemory()`
+returning a clean "not implemented yet" error rather than crashing) --
+but neither actually touches `golang.org/x/sys/unix` on `haiku` in
+practice. Both have their own generic, safe fallback for an
+unrecognized `GOOS` (the same pattern `golang.org/x/term`'s own
+`term_unsupported.go` uses) and never reach `x/sys/unix` at all here.
+Confirming the override works for real `x/sys/unix` usage still comes
+down to the direct test above, not these -- worth knowing before citing
+either as proof this override generalizes.
