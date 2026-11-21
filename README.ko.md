@@ -29,6 +29,15 @@ pkgman add-repo https://pkgman.rainygirl.com/arm64   # 시스템당 한 번만
 pkgman install golang_bin
 ```
 
+`scripts/smoke-test-golang.sh`는 같은 머신에서 돌리는 간단한 설치 후
+점검입니다 — 고루틴/뮤텍스 프로그램, `os/exec`, 그리고 `bin/go` 자신의
+`GOPROXY`/`GONOSUMDB` 기본값을 통한 실제 서드파티 모듈 빌드까지, 이
+패키지의 수정 사항이 건드린 바로 그 세 경로입니다.
+
+```sh
+sh scripts/smoke-test-golang.sh
+```
+
 ## 빌드하기
 
 ```sh

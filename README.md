@@ -30,6 +30,15 @@ pkgman add-repo https://pkgman.rainygirl.com/arm64   # once per system
 pkgman install golang_bin
 ```
 
+`scripts/smoke-test-golang.sh` is a quick post-install check, run on the
+same machine: a goroutine/mutex program, `os/exec`, and a real
+third-party module build through `bin/go`'s own `GOPROXY`/`GONOSUMDB`
+defaults -- the exact three paths this package's own fixes touched.
+
+```sh
+sh scripts/smoke-test-golang.sh
+```
+
 ## Building it
 
 ```sh
