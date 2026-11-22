@@ -78,7 +78,13 @@ R28 inside libc code. With all of that fixed, the two earlier workarounds (no Go
 SIGCHLD handler, async preemption off) are gone: SIGCHLD and SIGURG land in libc calls \
 safely, os/exec works with both on, and a goroutine spinning in a loop with no calls is \
 preempted again. The startup debug output (\"234567\" on stderr at every start) is gone \
-too: runtime/asm_arm64.s is upstream's again."
+too: runtime/asm_arm64.s is upstream's again. The same revision also \
+carries the cgo TLS fix: with cgo, runtime.save_g/load_g kept g at TPIDR_EL0 + 16, \
+which on Haiku is TLS slot 2, errno, so C code that set errno and then called back \
+into Go loaded a garbage g and hung; runtime/cgo (gcc_haiku_arm64.c) now gives g a \
+slot from tls_allocate() instead (non-cgo programs keep slot 62). And the pure Go \
+resolver now reads Haiku's hosts file, /boot/system/settings/network/hosts (there is \
+no /etc/hosts), so \"localhost\" resolves without DNS."
 HOMEPAGE="https://go.dev/"
 VERSION="1.27.4"
 REVISION="10"

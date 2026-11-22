@@ -179,6 +179,19 @@ syncthing, gh가 SIGTERM/SIGINT로 종료. 설치한 리비전 10 패키지로 �
 런타임이 모든 프로그램을 secure mode로 실행하고, 이 때문에 치명적 시그널
 보고가 첫 줄만 남습니다(`SIGQUIT: quit`, 고루틴 덤프 없음).
 
+## `localhost`와 hosts 파일
+
+Haiku에는 `/etc/hosts`가 없고 hosts 파일은
+`/boot/system/settings/network/hosts`에 있습니다. Go의 리졸버는
+`/etc/hosts`만 읽었기 때문에 리비전 9까지는 `localhost`가 DNS 서버로
+넘어가 실패했습니다(`lookup localhost ... no such host`): Caddy의 기본
+관리 주소, `net.Listen("tcp", "localhost:0")` 같은 경우입니다.
+리비전 10은 `src/net/hook_haiku.go`를 추가해 리졸버가 Haiku의 파일을
+읽게 합니다(DNS 설정은 korli/go에서 이미
+`/boot/system/settings/network/resolv.conf`를 읽고 있었습니다). 파일
+이름에 아키텍처가 없으므로 이 트리로 빌드한 haiku/amd64도 같이
+고쳐집니다.
+
 ## 서드파티 모듈 호환성 (`scripts/golang-goproxy-overrides/`)
 
 표준 라이브러리의 빌드 태그 문제가 아니라 모듈 생태계 자체의 실제 공백입니다.
@@ -272,11 +285,15 @@ relocation 재작성 루프 하나만 돌리고, `FlagD`가 원래 건너뛰던 
 호출하거나 그 상태에서 시그널이 오면 잘못된 `g`를 읽어 프로그램이
 멈췄습니다.
 
-이제 `runtime/tls_arm64.h`가 haiku에서 `TLSG_IS_VARIABLE`를 정의하고
-(Android와 같은 방식), `rt0_go`가 `_cgo_init`에 `&tls_g`를 넘기며,
+`runtime/tls_arm64.h`가 haiku에서 `TLSG_IS_VARIABLE`를 정의하고
+(Android와 같은 방식이며, 위의 시그널 수정에도 이미 필요했습니다),
+`rt0_go`가 `_cgo_init`에 `&tls_g`를 넘기며,
 `runtime/cgo/gcc_haiku_arm64.c`가 `tls_allocate()`로 받은 슬롯의 바이트
-오프셋을 채웁니다. 슬롯 번호는 C가 만든 스레드를 포함해 모든 스레드에서
-같습니다. cgo를 쓰지 않는 프로그램은 `tls_g`를 읽지 않습니다.
+오프셋을 채워 넣습니다. 슬롯 번호는 C가 만든 스레드를 포함해 모든
+스레드에서 같습니다. cgo가 없으면 `tls_g`는 기본값인 62번 슬롯
+그대로이고("시그널" 참고), cgo가 있으면 할당받은 슬롯으로 옮겨 가므로
+C 라이브러리의 TLS 키와 겹치지 않습니다. 두 수정 모두 리비전 10에
+들어 있습니다.
 
 ### cgo 프로그램 빌드
 
@@ -310,6 +327,12 @@ C에서 errno 설정 후 Go 호출(TLS 수정 전에는 멈춤), mattn/go-sqlite
 방식, Be API 심(`find_directory`, `get_system_info`, `BString`,
 `be_roster`), 스트레스 테스트(고루틴 1000개 x C 호출 20000번, Go 스레드와
 C pthread 16개에서의 Go 콜백, GC 부하) 10/10회.
+
+리비전 10 패키지(시그널 수정과 cgo 수정을 함께 포함)로, RenkuOS arm64에서
+그 패키지와 `gcc` 패키지로 네이티브 빌드해 다시 확인했습니다: C hello,
+errno 설정 후 콜백 테스트(5/5), 그리고 위의 시그널 테스트를 cgo 바이너리로
+(TERM/INT/TERM `Notify`, TERM -> 143, HUP -> 129, 루프 도는 고루틴이 있을
+때의 SIGTERM, `os/exec` 자식 200개, 루프 도는 고루틴이 있을 때의 GC).
 
 ## 라이선스
 

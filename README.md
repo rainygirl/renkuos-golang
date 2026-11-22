@@ -188,6 +188,18 @@ the Go runtime runs every program in secure mode, which also cuts every
 fatal signal report down to its first line (`SIGQUIT: quit`, no
 goroutine dump).
 
+## `localhost` and the hosts file
+
+Haiku has no `/etc/hosts`; its hosts file is
+`/boot/system/settings/network/hosts`. Go's resolver only read
+`/etc/hosts`, so up to revision 9 `localhost` went to the DNS server and
+failed (`lookup localhost ... no such host`): Caddy's default admin
+address, `net.Listen("tcp", "localhost:0")` and the like. Revision 10 adds
+`src/net/hook_haiku.go`, which points the resolver at Haiku's file (the
+DNS settings already came from `/boot/system/settings/network/resolv.conf`
+in korli/go). The file has no architecture suffix, so a haiku/amd64 build
+from this tree gets the fix too.
+
 ## Third-party module compatibility (`scripts/golang-goproxy-overrides/`)
 
 No build-tag issue in the standard library -- real gaps in the module
@@ -284,11 +296,14 @@ the stack), but a C function that set `errno` and then called an
 exported Go function, or a signal arriving in that state, loaded a
 garbage `g` and the program hung.
 
-`runtime/tls_arm64.h` now defines `TLSG_IS_VARIABLE` for haiku (as
-Android does), `rt0_go` passes `&tls_g` to `_cgo_init`, and
-`runtime/cgo/gcc_haiku_arm64.c` fills it with the byte offset of a slot
-from `tls_allocate()`. The slot index is the same in every thread,
-including threads created by C. Non-cgo programs never read `tls_g`.
+`runtime/tls_arm64.h` defines `TLSG_IS_VARIABLE` for haiku (as Android
+does; the signal fix above already needed it), `rt0_go` passes `&tls_g`
+to `_cgo_init`, and `runtime/cgo/gcc_haiku_arm64.c` fills it with the
+byte offset of a slot from `tls_allocate()`. The slot index is the same
+in every thread, including threads created by C. Without cgo `tls_g`
+keeps its default, slot 62 (see "Signals"); with cgo it moves to the
+allocated slot, so `g` cannot clash with a C library's own TLS keys.
+Both fixes ship in revision 10.
 
 ### Building cgo programs
 
@@ -324,6 +339,13 @@ both ways, a Be API shim (`find_directory`, `get_system_info`,
 `BString`, `be_roster`), and a stress test (1000 goroutines x 20000 C
 calls, Go callbacks from Go threads and from 16 C pthreads, GC
 pressure) 10/10 runs.
+
+Rechecked with the revision 10 package (signal and cgo fixes together),
+built natively with it and the `gcc` package on RenkuOS arm64: the C hello
+and the errno-then-callback test (5/5), and the signal tests above with a
+cgo binary (`Notify` of TERM/INT/TERM, TERM -> 143, HUP -> 129, SIGTERM
+with a spinning goroutine, 200 `os/exec` children, GC with a spinning
+goroutine).
 
 ## License
 
