@@ -38,12 +38,16 @@
 
 #ifdef GOOS_haiku
 // TPIDR_EL0 points at Haiku's own TLS slot array (void* tls[TLS_MAX_KEYS],
-// see src/system/libroot/os/arch/arm64/tls.c), not at an ELF TLS block.
-// g lives in slot 62 (tls_g is a variable, see tls_arm64.s), the same
-// slot haiku/amd64 uses (cmd/link Tlsoffset = (64-2)*8). Unlike linux,
-// g is kept there even without cgo: Go code calls into libroot for
-// every system call, so a signal can interrupt libc code at a point
-// where R28 does not hold g.
+// see src/system/libroot/os/arch/arm64/tls.c), not at an ELF TLS block,
+// and the runtime loader has no static TLS block for initial-exec TLS.
+// So tls_g is a plain variable holding the byte offset of g's slot (see
+// tls_arm64.s). Without cgo that is slot 62, the same slot haiku/amd64
+// uses (cmd/link Tlsoffset = (64-2)*8); with cgo, runtime/cgo
+// (gcc_haiku_arm64.c) replaces it with a slot from tls_allocate(), as
+// on Android, so it cannot clash with C code. Unlike linux, g is kept
+// there even without cgo: Go code calls into libroot for every system
+// call, so a signal can interrupt libc code at a point where R28 does
+// not hold g.
 #define MRS_TPIDR_R0 WORD $0xd53bd040 // MRS TPIDR_EL0, R0
 #define TLSG_IS_VARIABLE
 #endif

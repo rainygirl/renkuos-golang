@@ -129,7 +129,12 @@ TEXT runtime·rt0_go(SB),NOSPLIT|TOPFRAME,$0
 	MOVD	R0, R3			// arg 3: TLS base pointer
 	MOVD	$runtime·tls_g(SB), R2 	// arg 2: &tls_g
 #else
+#ifdef GOOS_haiku
+	MOVD	$runtime·tls_g(SB), R2 	// arg 2: &tls_g, set by x_cgo_inittls
+	MOVD	$0, R3			// arg 3: not used
+#else
 	MOVD	$0, R2		        // arg 2: not used when using platform's TLS
+#endif
 #endif
 	MOVD	$setg_gcc<>(SB), R1	// arg 1: setg
 	MOVD	g, R0			// arg 0: G

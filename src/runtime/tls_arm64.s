@@ -61,7 +61,9 @@ nocgo:
 DATA runtime·tls_g+0(SB)/8, $16
 #endif
 #ifdef GOOS_haiku
-// Byte offset of TLS slot 62 from TPIDR_EL0 (see tls_arm64.h).
+// Byte offset of TLS slot 62 from TPIDR_EL0 (see tls_arm64.h). With cgo,
+// x_cgo_inittls (runtime/cgo/gcc_haiku_arm64.c) overwrites it from
+// _cgo_init, before rt0_go's first save_g.
 DATA runtime·tls_g+0(SB)/8, $496
 #endif
 GLOBL runtime·tls_g+0(SB), NOPTR, $8
