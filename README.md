@@ -270,6 +270,61 @@ calling a real C function and converting a C string back to Go
 existing goroutine/`os/exec`/go-isatty smoke tests plus a full `go build
 std` still pass with no regression.
 
+### g and TLS under cgo
+
+The link fix above made cgo programs link, but every one of them still
+kept the goroutine pointer `g` in the wrong place. With cgo the runtime
+saves `g` at `TPIDR_EL0 + runtime.tls_g` (`runtime/tls_arm64.s`), and
+`tls_g` was an ELF TLS symbol that the external linker turned into a
+local-exec offset of 16. On Haiku, `TPIDR_EL0` is not an ELF thread
+pointer: it addresses the per-thread TLS slot array (`tls_address()` in
+libroot), and offset 16 is slot 2, `TLS_ERRNO_SLOT`. So `g` and `errno`
+shared one word. Plain C calls survived (`asmcgocall` restores `g` from
+the stack), but a C function that set `errno` and then called an
+exported Go function, or a signal arriving in that state, loaded a
+garbage `g` and the program hung.
+
+`runtime/tls_arm64.h` now defines `TLSG_IS_VARIABLE` for haiku (as
+Android does), `rt0_go` passes `&tls_g` to `_cgo_init`, and
+`runtime/cgo/gcc_haiku_arm64.c` fills it with the byte offset of a slot
+from `tls_allocate()`. The slot index is the same in every thread,
+including threads created by C. Non-cgo programs never read `tls_g`.
+
+### Building cgo programs
+
+Cross, from haiku-builder (sysroot = `haiku.hpkg` + `haiku_devel.hpkg` +
+`gcc_syslibs`/`gcc_syslibs_devel` extracted under `<sysroot>/boot/system`):
+
+```sh
+X=/root/renku-arm64-work/generated.arm64/cross-tools-arm64/bin
+CGO_ENABLED=1 GOOS=haiku GOARCH=arm64 \
+  CC="$X/aarch64-unknown-haiku-gcc --sysroot=<sysroot>" \
+  CXX="$X/aarch64-unknown-haiku-g++ --sysroot=<sysroot>" go build
+```
+
+Native, on RenkuOS: there was no C compiler for arm64 at all (the
+repositories have `gcc_syslibs`, not `gcc`). `scripts/cross-arm64-gcc.sh`
+builds gcc 13.3 + binutils 2.41 as a Canadian cross with the image's own
+cross tools and packages them as `gcc` (installs under
+`/boot/system/develop/tools`, with `gcc`/`g++`/`cc`/`ld`/... in
+`/boot/system/bin`; needs `haiku_devel`). With it installed, `go env
+CGO_ENABLED` is 1 and a plain `go build` uses cgo.
+
+Notes:
+- `github.com/mattn/go-sqlite3` works as is (it compiles its bundled
+  SQLite). With `-tags libsqlite3` it has no `#cgo haiku LDFLAGS`, so
+  pass `CGO_LDFLAGS=-lsqlite3`; RENKU's `sqlite3` package ships the
+  library but no `sqlite3.h`.
+- C++ (Be API) code works through an `extern "C"` shim in the package
+  with `#cgo LDFLAGS: -lbe -lstdc++`.
+
+Tested on RenkuOS arm64 (QEMU, cross and native builds): a C hello, a
+C-sets-errno-then-calls-Go test (hung before the TLS fix), mattn/go-sqlite3
+both ways, a Be API shim (`find_directory`, `get_system_info`,
+`BString`, `be_roster`), and a stress test (1000 goroutines x 20000 C
+calls, Go callbacks from Go threads and from 16 C pthreads, GC
+pressure) 10/10 runs.
+
 ## License
 
 BSD 3-Clause, the same license as Go itself -- these are platform-port

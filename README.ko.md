@@ -258,6 +258,59 @@ relocation 재작성 루프 하나만 돌리고, `FlagD`가 원래 건너뛰던 
 고루틴/`os/exec`/go-isatty 스모크 테스트와 전체 `go build std`도
 회귀 없이 그대로 통과합니다.
 
+### cgo에서의 g와 TLS
+
+위 링크 수정으로 cgo 프로그램이 링크는 되었지만, 고루틴 포인터 `g`는
+여전히 엉뚱한 곳에 저장되고 있었습니다. cgo가 켜지면 런타임은 `g`를
+`TPIDR_EL0 + runtime.tls_g`에 저장하는데(`runtime/tls_arm64.s`),
+`tls_g`가 ELF TLS 심볼이라 외부 링커가 이를 local-exec 오프셋 16으로
+만들었습니다. Haiku에서 `TPIDR_EL0`는 ELF 스레드 포인터가 아니라
+스레드별 TLS 슬롯 배열(libroot의 `tls_address()`)을 가리키고, 오프셋
+16은 2번 슬롯 `TLS_ERRNO_SLOT`입니다. 즉 `g`와 `errno`가 같은 워드를
+쓰고 있었습니다. 단순한 C 호출은 문제가 없었지만(`asmcgocall`이 `g`를
+스택에서 복원), C 함수가 `errno`를 설정한 뒤 export된 Go 함수를
+호출하거나 그 상태에서 시그널이 오면 잘못된 `g`를 읽어 프로그램이
+멈췄습니다.
+
+이제 `runtime/tls_arm64.h`가 haiku에서 `TLSG_IS_VARIABLE`를 정의하고
+(Android와 같은 방식), `rt0_go`가 `_cgo_init`에 `&tls_g`를 넘기며,
+`runtime/cgo/gcc_haiku_arm64.c`가 `tls_allocate()`로 받은 슬롯의 바이트
+오프셋을 채웁니다. 슬롯 번호는 C가 만든 스레드를 포함해 모든 스레드에서
+같습니다. cgo를 쓰지 않는 프로그램은 `tls_g`를 읽지 않습니다.
+
+### cgo 프로그램 빌드
+
+크로스 빌드(haiku-builder, sysroot = `haiku.hpkg` + `haiku_devel.hpkg` +
+`gcc_syslibs`/`gcc_syslibs_devel`를 `<sysroot>/boot/system`에 풀어 둔 것):
+
+```sh
+X=/root/renku-arm64-work/generated.arm64/cross-tools-arm64/bin
+CGO_ENABLED=1 GOOS=haiku GOARCH=arm64 \
+  CC="$X/aarch64-unknown-haiku-gcc --sysroot=<sysroot>" \
+  CXX="$X/aarch64-unknown-haiku-g++ --sysroot=<sysroot>" go build
+```
+
+RenkuOS에서 네이티브 빌드: arm64용 C 컴파일러가 아예 없었습니다(저장소에는
+`gcc`가 아니라 `gcc_syslibs`만 있음). `scripts/cross-arm64-gcc.sh`가
+이미지 자체의 크로스 툴로 gcc 13.3 + binutils 2.41을 캐나디안 크로스로
+빌드해 `gcc` 패키지로 만듭니다(`/boot/system/develop/tools`에 설치되고
+`gcc`/`g++`/`cc`/`ld` 등은 `/boot/system/bin`에 링크, `haiku_devel` 필요).
+설치하면 `go env CGO_ENABLED`가 1이 되고 그냥 `go build`로 cgo가 쓰입니다.
+
+참고:
+- `github.com/mattn/go-sqlite3`는 그대로 동작합니다(내장 SQLite를
+  컴파일). `-tags libsqlite3`에는 `#cgo haiku LDFLAGS`가 없으므로
+  `CGO_LDFLAGS=-lsqlite3`를 주어야 하고, RENKU의 `sqlite3` 패키지에는
+  라이브러리만 있고 `sqlite3.h`는 없습니다.
+- C++(Be API) 코드는 패키지 안의 `extern "C"` 심과
+  `#cgo LDFLAGS: -lbe -lstdc++`로 쓸 수 있습니다.
+
+RenkuOS arm64(QEMU)에서 크로스/네이티브 빌드 모두 검증: C hello,
+C에서 errno 설정 후 Go 호출(TLS 수정 전에는 멈춤), mattn/go-sqlite3 두
+방식, Be API 심(`find_directory`, `get_system_info`, `BString`,
+`be_roster`), 스트레스 테스트(고루틴 1000개 x C 호출 20000번, Go 스레드와
+C pthread 16개에서의 Go 콜백, GC 부하) 10/10회.
+
 ## 라이선스
 
 BSD 3-Clause, Go 자체와 같은 라이선스입니다 — 이 파일들은 Go 자체의
