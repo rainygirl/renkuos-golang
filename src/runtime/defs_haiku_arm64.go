@@ -169,10 +169,17 @@ type mcontext struct {
 	fpcr   uint32
 }
 
+// uc_mcontext is at offset 48, not 40: struct vregs holds __uint128_t
+// fp_q[], so mcontext_t is 16-byte aligned in C (checked with
+// offsetof(ucontext_t, uc_mcontext) from the Haiku cross gcc). Without
+// the padding every register read through sigctxt was off by one slot
+// (sigsp() returned lr, sigpc() returned sp, ...), so async preemption
+// never found a safe point and signal-time PCs were garbage.
 type ucontext struct {
 	uc_link     *ucontext
 	uc_sigmask  sigset
 	uc_stack    stackt
+	_           [8]byte
 	uc_mcontext mcontext
 }
 

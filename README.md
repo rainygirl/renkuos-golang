@@ -13,7 +13,8 @@ second architecture.
 
 This repo is the arm64-specific and RenkuOS-specific runtime/syscall source
 files (`src/`, every `*haiku*`-named file under the standard library plus
-the one shared file patched for RenkuOS -- see below), the packaging script
+the shared files patched for RenkuOS -- `runtime/tls_arm64.{h,s}`, see
+"Signals" below), the packaging script
 that turns a built toolchain into a RenkuOS `.hpkg`, and a local Go module
 proxy override that fixes a real third-party compatibility gap. It is not
 a full Go source tree: apply it on top of a `korli/go` checkout (or
@@ -78,7 +79,9 @@ write). This alone is enough to make ordinary goroutine/mutex-based
 programs, compiled and run directly, work correctly and reliably.
 
 **2. Go's own signal handling hanging `os/exec` and real builds**
-(`src/runtime/signal_unix.go`). Go installs its own SIGCHLD trap
+(`src/runtime/signal_unix.go`, revisions up to 9; the real cause was found
+and fixed in revision 10 and both workarounds below are gone -- see
+"Signals"). Go installs its own SIGCHLD trap
 unconditionally; a userspace signal trap landing on an M that is blocked
 inside a libc call reached via `asmcgocall` (`read()`/`wait4()` on a
 just-forked, already-exited child -- exactly what every
@@ -113,6 +116,77 @@ A separate packaging gap (`pkg/include/` -- `textflag.h`, `funcdata.h`,
 the `asm_*.h` headers -- never staged into the `.hpkg`, so any asm-based
 package failed `-gensymabis` the moment the two bugs above stopped masking
 it) is fixed in `scripts/cross-arm64-golang.sh`, not in `src/`.
+
+## Signals
+
+Up to revision 9, a Go program on haiku/arm64 ignored SIGTERM, SIGINT and
+SIGHUP -- only `kill -9` stopped it -- and `os/signal.Notify` never
+delivered anything. Every signal Go installed a handler for killed the
+thread that received it, silently: `strace -T` showed the signal arrive
+and that thread never make another system call. The SIGCHLD/SIGURG hangs
+of bug 2 above were the same thing. Four bugs, all fixed in revision 10:
+
+- **`sigtramp`'s frame clobbered its own return address**
+  (`src/runtime/sys_haiku_arm64.s`). It was written after
+  `sys_haiku_amd64.s` and saved its arguments at `0/8/16(SP)`. On amd64
+  that is free space; on arm64 `0(RSP)` is where the assembler's prologue
+  keeps the function's own saved LR, so `MOVW R0, 0(RSP)` replaced the low
+  32 bits of the return address with the signal number and `sigtramp`
+  never got back to Haiku's commpage signal handler. The frame now starts
+  at `8(RSP)`, like every other arm64 port.
+- **`sigtrampgo` was called through the wrong ABI** (same file). A plain
+  `BL runtime·sigtrampgo(SB)` from assembly binds to the ABI0 wrapper,
+  which reads its arguments from `8/16/24(RSP)` -- so `sigtrampgo` saw the
+  `siginfo` pointer as the signal number. It (and `badsignal`) is now
+  called through its `<ABIInternal>` entry point with the arguments in
+  R0-R2, as `sys_linux_arm64.s`/`sys_darwin_arm64.s` do.
+- **`ucontext_t.uc_mcontext` is at offset 48, not 40**
+  (`src/runtime/defs_haiku_arm64.go`). `struct vregs` holds
+  `__uint128_t fp_q[32]`, so `mcontext_t` is 16-byte aligned (checked with
+  `offsetof` from the Haiku cross gcc). Every register read from a signal
+  context was one slot off: `sigsp()` returned LR, `sigpc()` returned SP.
+  Async preemption never found a safe point, and signal-time PCs in crash
+  reports were wrong.
+- **`pthread_self()` was truncated to 32 bits**
+  (`src/runtime/os2_haiku.go`). It went through `libcCall`, which returns
+  an `int32`, so `m.procid` was a sign-extended half pointer and the
+  `pthread_kill` that sends async preemption's SIGURG faulted inside
+  libroot. The trampoline now stores the full `pthread_t` through its
+  argument.
+
+`g` is also kept in TLS now, not only in R28 (`src/runtime/tls_arm64.h`,
+`tls_arm64.s`): TPIDR_EL0 on Haiku points at libroot's own TLS slot array,
+and `g` lives in slot 62, the slot haiku/amd64 uses. `sigtramp` loads it
+from there, so a signal that interrupts libroot code (where R28 is just
+another callee-saved register) still finds the right `g`, the same reason
+darwin and openbsd always keep `g` in TLS.
+
+With these fixed, both workarounds from bug 2 are removed and
+`signal_unix.go` is upstream's again: Go installs its SIGCHLD handler and
+async preemption is on. The startup debug output (`234567` on stderr at
+every start, from leftover `dbgw` calls in `runtime/asm_arm64.s`) is gone
+too; that file is upstream's again.
+
+Checked on an arm64 RenkuOS VM: `signal.Notify` receives SIGTERM, SIGINT
+and SIGTERM again in a row; without `Notify`, SIGTERM exits with status
+143, SIGINT 130 and SIGHUP 129; a nil dereference is recovered as a panic;
+a program receives about a thousand SIGUSR1s a second while three
+goroutines compute (no wrong results); GC completes while a goroutine
+spins in `for {}`; `os/exec` runs 200 children in a row five times over;
+tailscaled shuts down cleanly on SIGTERM and its service script's cleanup
+runs; rclone, syncthing and gh stop on SIGTERM/SIGINT. Natively, from the
+installed revision 10 package: `scripts/smoke-test-golang.sh` passes, and
+`go test -short os/signal sync` passes apart from
+`TestNotifyContextStringer`, which expects Linux's name for SIGTERM
+("terminated"; Haiku says "termination requested").
+
+Still open: clean-cache `go build std` failed 3 times in 29 runs with
+`compile: exit status 255` and no other output, with async preemption on
+and off alike (the intermittent flake noted in bug 2). Its crash output,
+if any, is hidden: Haiku's `issetugid()` (libbsd) always returns 1, so
+the Go runtime runs every program in secure mode, which also cuts every
+fatal signal report down to its first line (`SIGQUIT: quit`, no
+goroutine dump).
 
 ## Third-party module compatibility (`scripts/golang-goproxy-overrides/`)
 

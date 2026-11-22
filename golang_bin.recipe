@@ -59,10 +59,29 @@ external-linkable object and crashed the linker's own object writer with \`inter
 error: ElfShdr relocSect\`). Confirmed end to end: a cgo program calling a real C \
 function and converting a C string back to Go (C.add, C.CString/C.GoString) builds and \
 runs correctly, and the existing goroutine/os-exec/go-isatty smoke tests plus a full \
-\`go build std\` still pass with no regression."
+\`go build std\` still pass with no regression. Revision 10 makes signals work at all: \
+before it, a Go program ignored SIGTERM, SIGINT and SIGHUP (only kill -9 stopped it) and \
+os/signal.Notify never fired, because every signal Go handled left the receiving thread \
+dead in sigtramp. runtime/sys_haiku_arm64.s's sigtramp had copied the amd64 frame layout \
+(arguments at 0/8/16(SP)): on arm64 0(RSP) is the function's own saved return address, \
+so storing the signal number there meant sigtramp could never return, and the plain BL \
+to sigtrampgo went through its ABI0 wrapper, which reads its arguments from \
+8/16/24(RSP), so sigtrampgo saw the siginfo pointer as the signal number. Fixed by moving \
+the frame up by 8 bytes and calling sigtrampgo/badsignal through their register-ABI \
+entry points, as the linux/darwin arm64 ports do. Two more bugs then showed up: \
+ucontext_t's uc_mcontext is at offset 48 (struct vregs holds __uint128_t, so it is \
+16-byte aligned), not 40, so every register read from a signal context was one slot off; \
+and pthread_self() went through libcCall, whose int32 result truncated the pthread_t \
+pointer, so the SIGURG of async preemption made pthread_kill fault. g is now also kept in \
+TLS slot 62 (as on haiku/amd64) and loaded from there in sigtramp, instead of trusting \
+R28 inside libc code. With all of that fixed, the two earlier workarounds (no Go \
+SIGCHLD handler, async preemption off) are gone: SIGCHLD and SIGURG land in libc calls \
+safely, os/exec works with both on, and a goroutine spinning in a loop with no calls is \
+preempted again. The startup debug output (\"234567\" on stderr at every start) is gone \
+too: runtime/asm_arm64.s is upstream's again."
 HOMEPAGE="https://go.dev/"
 VERSION="1.27.4"
-REVISION="9"
+REVISION="10"
 LICENSE="BSD (3-clause)"
 COPYRIGHT="2009 The Go Authors"
 ARCHITECTURES_SUPPORTED="arm64"

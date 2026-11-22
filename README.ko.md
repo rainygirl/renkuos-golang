@@ -12,7 +12,7 @@ libroot.so를 직접 호출)을 그대로 따라 arm64로 확장한 것입니다
 
 이 저장소는 arm64 전용/RenkuOS 전용 런타임·syscall 소스(`src/` — 표준
 라이브러리 전체에서 `*haiku*`로 이름 붙은 모든 파일과, RenkuOS용으로 수정한
-공유 파일 하나, 아래 설명), 빌드된 툴체인을 RenkuOS `.hpkg`로 만드는
+공유 파일 `runtime/tls_arm64.{h,s}` -- 아래 "시그널" 참고), 빌드된 툴체인을 RenkuOS `.hpkg`로 만드는
 패키징 스크립트, 그리고 실제 서드파티 호환성 문제를 해결하는 로컬 Go
 모듈 프록시 오버라이드로 구성되어 있습니다. 전체 Go 소스 트리가 아닙니다 —
 다른 플랫폼 포트를 적용할 때와 똑같이, `korli/go` 체크아웃(또는 amd64용
@@ -76,7 +76,8 @@ RenkuOS 위에서 직접 실행하도록 만들어진 진짜 RenkuOS ELF 바이�
 보통의 프로그램을 직접 컴파일해서 실행했을 때 안정적으로 정상 동작합니다.
 
 **2. Go 자체의 시그널 처리가 `os/exec`와 실제 빌드를 멈추게 함**
-(`src/runtime/signal_unix.go`). Go는 SIGCHLD에 무조건 자체 트랩을
+(`src/runtime/signal_unix.go`, 리비전 9까지. 진짜 원인은 리비전 10에서 찾아
+고쳤고 아래 두 우회책은 모두 없앴습니다 -- "시그널" 참고). Go는 SIGCHLD에 무조건 자체 트랩을
 설치하는데, `asmcgocall`을 거쳐 libc 호출(막 fork한, 이미 종료된 자식에
 대한 `read()`/`wait4()` — 모든 `os/exec.Cmd.Start()+Wait()`가 정확히 이
 동작을 하며, `cmd/go`가 `compile`/`asm`/`link`를 띄우는 것도 포함됨) 안에
@@ -111,6 +112,72 @@ fork+exec을 하므로 블록된 libc 호출 중에 떨어질 기회가 많습�
 `asm_*.h` 헤더들이 `.hpkg`에 전혀 담기지 않아, 위 두 버그가 더 이상
 가로막지 않는 순간 asm 기반 패키지가 `-gensymabis`에서 전부 실패하던
 문제)은 `src/`가 아니라 `scripts/cross-arm64-golang.sh`에서 고쳤습니다.
+
+## 시그널
+
+리비전 9까지 haiku/arm64의 Go 프로그램은 SIGTERM, SIGINT, SIGHUP을
+무시했고(`kill -9`로만 멈춤) `os/signal.Notify`로는 아무것도 받지 못했습니다.
+Go가 핸들러를 설치한 시그널은 그것을 받은 스레드를 조용히 죽였습니다 --
+`strace -T`로 보면 시그널은 도착하는데 그 스레드는 그 뒤로 시스템 콜을 한
+번도 하지 않습니다. 위 버그 2의 SIGCHLD/SIGURG 행도 같은 원인이었습니다.
+버그는 넷이었고 모두 리비전 10에서 고쳤습니다:
+
+- **`sigtramp`의 프레임이 자기 복귀 주소를 덮어씀**
+  (`src/runtime/sys_haiku_arm64.s`). `sys_haiku_amd64.s`를 본떠 인자를
+  `0/8/16(SP)`에 저장했습니다. amd64에서는 빈 자리지만 arm64에서
+  `0(RSP)`는 어셈블러 프롤로그가 함수 자신의 LR을 저장하는 곳이라,
+  `MOVW R0, 0(RSP)`가 복귀 주소의 하위 32비트를 시그널 번호로 바꿔 버렸고
+  `sigtramp`는 Haiku의 commpage 시그널 핸들러로 돌아가지 못했습니다. 이제
+  다른 arm64 포트들처럼 프레임이 `8(RSP)`부터 시작합니다.
+- **`sigtrampgo`를 잘못된 ABI로 호출** (같은 파일). 어셈블리에서 그냥
+  `BL runtime·sigtrampgo(SB)`를 하면 ABI0 래퍼로 연결되는데, 이 래퍼는
+  인자를 `8/16/24(RSP)`에서 읽습니다 -- 그래서 `sigtrampgo`는 `siginfo`
+  포인터를 시그널 번호로 받았습니다. 이제 `sys_linux_arm64.s`/
+  `sys_darwin_arm64.s`처럼 `<ABIInternal>` 진입점을 R0-R2 인자로
+  호출합니다(`badsignal`도 같음).
+- **`ucontext_t.uc_mcontext`의 오프셋은 40이 아니라 48**
+  (`src/runtime/defs_haiku_arm64.go`). `struct vregs`에
+  `__uint128_t fp_q[32]`가 있어 `mcontext_t`가 16바이트 정렬입니다(Haiku
+  교차 gcc의 `offsetof`로 확인). 시그널 컨텍스트에서 읽는 레지스터가 전부 한
+  칸씩 밀려 있었습니다: `sigsp()`는 LR을, `sigpc()`는 SP를 돌려줬습니다.
+  비동기 선점은 안전 지점을 한 번도 찾지 못했고, 크래시 리포트의 PC도
+  틀렸습니다.
+- **`pthread_self()`가 32비트로 잘림** (`src/runtime/os2_haiku.go`).
+  `int32`를 반환하는 `libcCall`을 거쳤기 때문에 `m.procid`가 부호 확장된
+  반쪽 포인터였고, 비동기 선점의 SIGURG를 보내는 `pthread_kill`이 libroot
+  안에서 폴트를 냈습니다. 이제 트램폴린이 인자로 받은 포인터에 `pthread_t`
+  전체를 저장합니다.
+
+또한 `g`를 R28에만 두지 않고 TLS에도 둡니다(`src/runtime/tls_arm64.h`,
+`tls_arm64.s`): Haiku에서 TPIDR_EL0은 libroot 자체의 TLS 슬롯 배열을
+가리키고, `g`는 haiku/amd64가 쓰는 것과 같은 62번 슬롯에 있습니다.
+`sigtramp`가 거기서 `g`를 읽으므로, libroot 코드(여기서 R28은 그냥
+callee-saved 레지스터 중 하나)를 실행하다 시그널을 받아도 올바른 `g`를
+찾습니다 -- darwin과 openbsd가 늘 TLS에 `g`를 두는 것과 같은 이유입니다.
+
+이것들을 고친 뒤 버그 2의 두 우회책을 없앴고 `signal_unix.go`는 다시
+업스트림 그대로입니다: Go가 SIGCHLD 핸들러를 설치하고 비동기 선점도
+켜져 있습니다. 시작할 때마다 stderr에 찍히던 디버그 출력(`234567`,
+`runtime/asm_arm64.s`에 남아 있던 `dbgw` 호출)도 없앴고, 이 파일도 다시
+업스트림 그대로입니다.
+
+arm64 RenkuOS VM에서 확인: `signal.Notify`가 SIGTERM, SIGINT, SIGTERM을
+연달아 받음; `Notify` 없이 SIGTERM은 상태 143, SIGINT는 130, SIGHUP은 129로
+종료; nil 역참조가 panic으로 recover됨; 고루틴 셋이 계산하는 동안 초당 약
+천 개의 SIGUSR1을 받음(계산 오류 없음); 고루틴 하나가 `for {}`로 도는
+동안에도 GC 완료; `os/exec`로 자식 200개 연속 실행을 다섯 번; tailscaled가
+SIGTERM으로 깔끔히 종료되고 서비스 스크립트의 정리 단계가 실행됨; rclone,
+syncthing, gh가 SIGTERM/SIGINT로 종료. 설치한 리비전 10 패키지로 네이티브
+실행: `scripts/smoke-test-golang.sh` 통과, `go test -short os/signal sync`는
+`TestNotifyContextStringer`만 실패(Linux의 SIGTERM 이름 "terminated"를
+기대하지만 Haiku는 "termination requested").
+
+남은 문제: 깨끗한 캐시의 `go build std`가 29번 중 3번
+`compile: exit status 255`로, 다른 출력 없이 실패했습니다. 비동기 선점을
+켜도 꺼도 마찬가지입니다(버그 2에 적은 간헐적 결함). 크래시 출력이 있었더라도
+보이지 않습니다: Haiku의 `issetugid()`(libbsd)는 항상 1을 반환하므로 Go
+런타임이 모든 프로그램을 secure mode로 실행하고, 이 때문에 치명적 시그널
+보고가 첫 줄만 남습니다(`SIGQUIT: quit`, 고루틴 덤프 없음).
 
 ## 서드파티 모듈 호환성 (`scripts/golang-goproxy-overrides/`)
 

@@ -686,8 +686,15 @@ func pthread_create(thread *pthread, attr *pthreadattr, fn uintptr, arg unsafe.P
 }
 func pthread_create_trampoline()
 
+// pthread_t is a pointer on Haiku, but libcCall returns an int32: the
+// trampoline stores the full 64-bit result through its argument instead.
+// (Returning it through libcCall truncated it to 32 bits and sign-extended
+// it, so m.procid was not a valid pthread_t and the pthread_kill in signalM
+// -- async preemption's SIGURG -- faulted inside libroot.)
 func pthread_self() pthread {
-	return pthread(libcCall(unsafe.Pointer(abi.FuncPCABI0(pthread_self_trampoline)), nil))
+	var t pthread
+	libcCall(unsafe.Pointer(abi.FuncPCABI0(pthread_self_trampoline)), unsafe.Pointer(&t))
+	return t
 }
 func pthread_self_trampoline()
 

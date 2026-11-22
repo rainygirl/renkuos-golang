@@ -105,6 +105,11 @@ TEXT runtime·tstart_sysvicall(SB),NOSPLIT,$0
 	// Make the new m's g0 the active g.
 	MOVD	R0, g_m(R1)
 	MOVD	R1, g
+	// Also publish it in the TLS slot load_g reads (see tls_arm64.h),
+	// so a signal landing before the first g switch still finds it.
+	BL	runtime·save_g(SB)	// clobbers R0 and R27, not g
+	MOVD	g, R1
+	MOVD	g_m(g), R0
 
 	// Layout new m scheduler stack on os stack.
 	MOVD	RSP, R2
@@ -120,45 +125,67 @@ TEXT runtime·tstart_sysvicall(SB),NOSPLIT,$0
 	MOVD	$0, R0	// return 0 == success
 	RET
 
-// Stack frame layout for sigtramp below (offsets from RSP, no overlap):
-//   0   sig
-//   8   info
-//   16  ctx
-//   24  tmp sigctxt.info (badsignal path only)
-//   32  tmp sigctxt.ctxt (badsignal path only)
-//   40  R19..R28 saved  (80 bytes)
-//   120 F8..F15 saved   (64 bytes)
-//   184 libcall fn/args/n/r1/r2 saved (40 bytes)
-//   224 scratch[0..5] saved (48 bytes)
-//   272 saved errno (8 bytes)
-// total 280, rounded up to 288 for 16-byte alignment.
+// Stack frame layout for sigtramp below (offsets from RSP, no overlap).
+// 0(RSP) is NOT free: on arm64 the Go assembler's prologue stores this
+// function's own return address (LR) there, so the first usable slot is
+// 8(RSP) -- the same reason every other arm64 port (linux, darwin,
+// openbsd) starts its saved arguments at 8*1(RSP). An earlier version
+// of this file copied sys_haiku_amd64.s's 0(SP)/8(SP)/16(SP) layout
+// (correct on amd64, where CALL pushes the return address below SP):
+// `MOVW R0, 0(RSP)` overwrote the low 32 bits of the saved LR with the
+// signal number, so sigtramp could never return to Haiku's
+// commpage signal handler, and the thread died in a fault loop with
+// every signal blocked (sa_mask is sigset_all). That, plus the ABI
+// mismatch described at the sigtrampgo call below, is why Go programs
+// on haiku/arm64 never saw SIGTERM/SIGINT/SIGCHLD/SIGURG.
+//   8   sig
+//   16  info
+//   24  ctx
+//   32  tmp sigctxt.info (badsignal path only)
+//   40  tmp sigctxt.ctxt (badsignal path only)
+//   48  R19..R28 saved  (80 bytes)
+//   128 F8..F15 saved   (64 bytes)
+//   192 libcall fn/args/n/r1/r2 saved (40 bytes)
+//   232 scratch[0..5] saved (48 bytes)
+//   280 saved errno (8 bytes)
+// total 288.
 
-// Careful, this is called by Haiku's own __sighndlr via libroot.
-// We must preserve callee-saved registers per AAPCS64.
-TEXT runtime·sigtramp(SB),NOSPLIT|TOPFRAME,$280
+// Called by Haiku's commpage signal handler (arch_user_signal_handler)
+// as handler(sig, info, ctx, userdata), and returns to it, which then
+// does _kern_restore_signal_frame. We must preserve callee-saved
+// registers per AAPCS64.
+TEXT runtime·sigtramp(SB),NOSPLIT|TOPFRAME,$288
 	// Save callee-save registers, in case this is a cgo callback
 	// or we're forwarding a signal.
-	SAVE_R19_TO_R28(40)
-	SAVE_F8_TO_F15(120)
+	SAVE_R19_TO_R28(48)
+	SAVE_F8_TO_F15(128)
 
 	// Save arguments.
-	MOVW	R0, 0(RSP)	// sig
-	MOVD	R1, 8(RSP)	// info
-	MOVD	R2, 16(RSP)	// ctx
+	MOVW	R0, 8(RSP)	// sig
+	MOVD	R1, 16(RSP)	// info
+	MOVD	R2, 24(RSP)	// ctx
 
 	// This might be called in external code context,
-	// where g is not set.
+	// where g is not set. load_g reads g from TLS (see tls_arm64.h:
+	// on haiku g is always kept in a TLS slot, not only under cgo),
+	// so this does not depend on R28 still holding g, which it need
+	// not when the signal interrupted a libc call.
 	BL	runtime·load_g(SB)
 
 	CMP	$0, g
 	BNE	allgood
-	MOVD	8(RSP), R1
-	MOVD	16(RSP), R2
-	MOVD	R1, 24(RSP)	// tmp sigctxt.info
-	MOVD	R2, 32(RSP)	// tmp sigctxt.ctxt
-	MOVD	0(RSP), R0	// sig
-	MOVD	$24(RSP), R1	// &tmp sigctxt
-	BL	runtime·badsignal(SB)
+	MOVD	16(RSP), R1
+	MOVD	24(RSP), R2
+	MOVD	R1, 32(RSP)	// tmp sigctxt.info
+	MOVD	R2, 40(RSP)	// tmp sigctxt.ctxt
+	MOVWU	8(RSP), R0	// sig
+	MOVD	$32(RSP), R1	// &tmp sigctxt
+	// badsignal is a Go function: call its register-ABI entry point
+	// directly with the arguments in R0/R1 (a plain BL from assembly
+	// would bind to the ABI0 wrapper, which reads them from 8(RSP)
+	// and 16(RSP) instead).
+	MOVD	$runtime·badsignal<ABIInternal>(SB), R3
+	BL	(R3)
 	B	exit
 
 allgood:
@@ -167,77 +194,86 @@ allgood:
 	MOVD	g_m(g), R19
 
 	MOVD	(m_mOS+mOS_libcall+libcall_fn)(R19), R10
-	MOVD	R10, 184(RSP)
-	MOVD	(m_mOS+mOS_libcall+libcall_args)(R19), R10
 	MOVD	R10, 192(RSP)
-	MOVD	(m_mOS+mOS_libcall+libcall_n)(R19), R10
+	MOVD	(m_mOS+mOS_libcall+libcall_args)(R19), R10
 	MOVD	R10, 200(RSP)
-	MOVD	(m_mOS+mOS_libcall+libcall_r1)(R19), R10
+	MOVD	(m_mOS+mOS_libcall+libcall_n)(R19), R10
 	MOVD	R10, 208(RSP)
-	MOVD	(m_mOS+mOS_libcall+libcall_r2)(R19), R10
+	MOVD	(m_mOS+mOS_libcall+libcall_r1)(R19), R10
 	MOVD	R10, 216(RSP)
+	MOVD	(m_mOS+mOS_libcall+libcall_r2)(R19), R10
+	MOVD	R10, 224(RSP)
 
 	MOVD	(m_mOS+mOS_scratch+0*8)(R19), R10
-	MOVD	R10, 224(RSP)
-	MOVD	(m_mOS+mOS_scratch+1*8)(R19), R10
 	MOVD	R10, 232(RSP)
-	MOVD	(m_mOS+mOS_scratch+2*8)(R19), R10
+	MOVD	(m_mOS+mOS_scratch+1*8)(R19), R10
 	MOVD	R10, 240(RSP)
-	MOVD	(m_mOS+mOS_scratch+3*8)(R19), R10
+	MOVD	(m_mOS+mOS_scratch+2*8)(R19), R10
 	MOVD	R10, 248(RSP)
-	MOVD	(m_mOS+mOS_scratch+4*8)(R19), R10
+	MOVD	(m_mOS+mOS_scratch+3*8)(R19), R10
 	MOVD	R10, 256(RSP)
-	MOVD	(m_mOS+mOS_scratch+5*8)(R19), R10
+	MOVD	(m_mOS+mOS_scratch+4*8)(R19), R10
 	MOVD	R10, 264(RSP)
+	MOVD	(m_mOS+mOS_scratch+5*8)(R19), R10
+	MOVD	R10, 272(RSP)
 
 	// Save errno; stuff we do here might reset it.
 	MOVD	(m_mOS+mOS_perrno)(R19), R10
+	CBZ	R10, noerrno_save
 	MOVW	(R10), R10
-	MOVD	R10, 272(RSP)
+	MOVD	R10, 280(RSP)
+noerrno_save:
 
-	// Prepare call.
-	MOVW	0(RSP), R0
-	MOVD	8(RSP), R1
-	MOVD	16(RSP), R2
-	BL	runtime·sigtrampgo(SB)
+	// Call sigtrampgo(sig, info, ctx) through its register-ABI entry
+	// point, with the arguments in R0-R2, exactly as
+	// sys_linux_arm64.s/sys_darwin_arm64.s do. A plain
+	// `BL runtime·sigtrampgo(SB)` binds to the ABI0 wrapper, which
+	// reads its arguments from 8/16/24(RSP) -- so with the old layout
+	// sigtrampgo got info as sig and ctx as info.
+	MOVWU	8(RSP), R0
+	MOVD	16(RSP), R1
+	MOVD	24(RSP), R2
+	MOVD	$runtime·sigtrampgo<ABIInternal>(SB), R3
+	BL	(R3)
 
 	BL	runtime·load_g(SB)
 	MOVD	g_m(g), R19
 
 	// Restore libcall.
-	MOVD	184(RSP), R10
-	MOVD	R10, (m_mOS+mOS_libcall+libcall_fn)(R19)
 	MOVD	192(RSP), R10
-	MOVD	R10, (m_mOS+mOS_libcall+libcall_args)(R19)
+	MOVD	R10, (m_mOS+mOS_libcall+libcall_fn)(R19)
 	MOVD	200(RSP), R10
-	MOVD	R10, (m_mOS+mOS_libcall+libcall_n)(R19)
+	MOVD	R10, (m_mOS+mOS_libcall+libcall_args)(R19)
 	MOVD	208(RSP), R10
-	MOVD	R10, (m_mOS+mOS_libcall+libcall_r1)(R19)
+	MOVD	R10, (m_mOS+mOS_libcall+libcall_n)(R19)
 	MOVD	216(RSP), R10
+	MOVD	R10, (m_mOS+mOS_libcall+libcall_r1)(R19)
+	MOVD	224(RSP), R10
 	MOVD	R10, (m_mOS+mOS_libcall+libcall_r2)(R19)
 
 	// Restore scratch.
-	MOVD	224(RSP), R10
-	MOVD	R10, (m_mOS+mOS_scratch+0*8)(R19)
 	MOVD	232(RSP), R10
-	MOVD	R10, (m_mOS+mOS_scratch+1*8)(R19)
+	MOVD	R10, (m_mOS+mOS_scratch+0*8)(R19)
 	MOVD	240(RSP), R10
-	MOVD	R10, (m_mOS+mOS_scratch+2*8)(R19)
+	MOVD	R10, (m_mOS+mOS_scratch+1*8)(R19)
 	MOVD	248(RSP), R10
-	MOVD	R10, (m_mOS+mOS_scratch+3*8)(R19)
+	MOVD	R10, (m_mOS+mOS_scratch+2*8)(R19)
 	MOVD	256(RSP), R10
-	MOVD	R10, (m_mOS+mOS_scratch+4*8)(R19)
+	MOVD	R10, (m_mOS+mOS_scratch+3*8)(R19)
 	MOVD	264(RSP), R10
+	MOVD	R10, (m_mOS+mOS_scratch+4*8)(R19)
+	MOVD	272(RSP), R10
 	MOVD	R10, (m_mOS+mOS_scratch+5*8)(R19)
 
 	// Restore errno.
 	MOVD	(m_mOS+mOS_perrno)(R19), R10
-	MOVD	272(RSP), R11
+	CBZ	R10, exit
+	MOVD	280(RSP), R11
 	MOVW	R11, (R10)
 
 exit:
-	RESTORE_R19_TO_R28(40)
-	RESTORE_F8_TO_F15(120)
+	RESTORE_R19_TO_R28(48)
+	RESTORE_F8_TO_F15(128)
 	RET
 
 TEXT runtime·sigfwd(SB),NOSPLIT,$0-32
@@ -508,8 +544,13 @@ TEXT runtime·exit_trampoline(SB),NOSPLIT,$0
 	BL	libc_exit(SB)
 	RET
 
-TEXT runtime·pthread_self_trampoline(SB),NOSPLIT,$0
+// R0 holds a *pthread to store the result in (see pthread_self in
+// os2_haiku.go for why it is not returned in R0).
+TEXT runtime·pthread_self_trampoline(SB),NOSPLIT,$32
+	MOVD	R0, 16(RSP)
 	BL	libc_pthread_self(SB)
+	MOVD	16(RSP), R1
+	MOVD	R0, 0(R1)
 	RET
 
 TEXT runtime·getpid_trampoline(SB),NOSPLIT,$0
