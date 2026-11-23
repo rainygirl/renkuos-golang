@@ -22,7 +22,7 @@
 # bin/ symlinks (gcc, g++, cc, c++, cpp, as, ld, ar, ...), the layout gcc's
 # own Haiku config expects (headers come from haiku_devel via the sysroot "/").
 set -e
-REV=${REV:-1}
+REV=${REV:-2}
 BT=${BT:-/root/renku-arm64-work/buildtools}
 GEN=${GEN:-/root/renku-arm64-work/generated.arm64}
 XT=$GEN/cross-tools-arm64
@@ -129,6 +129,7 @@ provides {
 requires {
 	haiku
 	haiku_devel
+	gcc_syslibs_devel
 	lib:libstdc++
 }
 INFO
