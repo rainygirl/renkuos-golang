@@ -311,7 +311,15 @@ RenkuOS에서 네이티브 빌드: arm64용 C 컴파일러가 아예 없었습�
 `gcc`가 아니라 `gcc_syslibs`만 있음). `scripts/cross-arm64-gcc.sh`가
 이미지 자체의 크로스 툴로 gcc 13.3 + binutils 2.41을 캐나디안 크로스로
 빌드해 `gcc` 패키지로 만듭니다(`/boot/system/develop/tools`에 설치되고
-`gcc`/`g++`/`cc`/`ld` 등은 `/boot/system/bin`에 링크, `haiku_devel` 필요).
+`gcc`/`g++`/`cc`/`ld` 등은 `/boot/system/bin`에 링크, `haiku_devel`과
+`gcc_syslibs_devel` 필요). RENKU Apps 저장소에 이미지의 `haiku`와 맞는
+`haiku_devel`과 함께 올라가 있습니다(Renku 시스템 저장소의 `haiku_devel`은
+다른 빌드라 설치되지 않습니다).
+
+```sh
+pkgman install gcc
+```
+
 설치하면 `go env CGO_ENABLED`가 1이 되고 그냥 `go build`로 cgo가 쓰입니다.
 
 참고:

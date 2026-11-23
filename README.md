@@ -322,8 +322,16 @@ repositories have `gcc_syslibs`, not `gcc`). `scripts/cross-arm64-gcc.sh`
 builds gcc 13.3 + binutils 2.41 as a Canadian cross with the image's own
 cross tools and packages them as `gcc` (installs under
 `/boot/system/develop/tools`, with `gcc`/`g++`/`cc`/`ld`/... in
-`/boot/system/bin`; needs `haiku_devel`). With it installed, `go env
-CGO_ENABLED` is 1 and a plain `go build` uses cgo.
+`/boot/system/bin`; needs `haiku_devel` and `gcc_syslibs_devel`). It is in
+the RENKU Apps repository, together with a `haiku_devel` that matches the
+images' `haiku` (the Renku system repository's `haiku_devel` is another build
+and cannot be installed):
+
+```sh
+pkgman install gcc
+```
+
+With it installed, `go env CGO_ENABLED` is 1 and a plain `go build` uses cgo.
 
 Notes:
 - `github.com/mattn/go-sqlite3` works as is (it compiles its bundled
